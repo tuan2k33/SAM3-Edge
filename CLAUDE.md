@@ -104,9 +104,11 @@ row *b* slot *k* = camera *b*'s k-th class encoding (from `text_encoder.engine`,
 
 ### The `_get_coords` box-accuracy fix
 
-`Sam3DetrDecoder._get_coords` (upstream `transformers`) generates a coordinate grid `arange(0,height)/height` that never reaches 1.0 (max value is `(height-1)/height`), which biases the decoder's cross-attention (used for box refinement at every decoder layer) to undershoot boxes toward the far corner (x2,y2) — worse at smaller `imgsz`, negligible at the native 1008. `SAM3Fixed/export.py` monkeypatches `Sam3DetrDecoder._get_coords` at **module import time** (before any model is constructed) to divide by `(height-1)`/`(width-1)` instead, so the grid actually reaches 1.0 — no flag, no opt-in, baked into every exported engine automatically.
+`Sam3DetrDecoder._get_coords` (upstream `transformers`) generates a coordinate grid `arange(0,height)/height` that never reaches 1.0 (max value is `(height-1)/height`), which biases the decoder's cross-attention (used for box refinement at every decoder layer) to undershoot boxes toward the far corner (x2,y2) — worse at smaller `imgsz`, negligible at the native 1008. `SAM3Fixed/export.py` monkeypatches `Sam3DetrDecoder._get_coords` at **module import time** (before any model is constructed) to `arange(0,H)/(H-1) * _COORDS_CAP` with `_COORDS_CAP = 0.987654321` — no flag, no opt-in, baked into every exported engine automatically (`ESAM3_test` carries the same value).
 
-An earlier version of this fix used an empirically-calibrated additive offset (0 at 1008 → 0.3 at 280) plus a box-dilation post-process instead of touching the denominator; the `/(height-1)` form was adopted after `probe_get_coords.py`-style A/B/C comparisons (bus/person/cat/remote, imgsz 1008/504/280) showed it has consistently lower total box-coordinate error. Trade-off: unlike the offset patch, it is not an exact no-op at 1008 (~0.5-1% shift can appear even at native resolution), and it can push an already-near-edge box slightly past the frame (e.g. `x2=1.01`) — `Sam3Wrapper.forward()` clamps the final box to `[0,1]` to handle this.
+The grid is deliberately **capped below 1.0**, not made to reach it: the checkpoint was only trained at imgsz 1008, where the grid's max is 71/72 = 0.9861, and a full 1.0 is one patch past what the frozen `box_rpb_embed_x/y` MLPs saw — it measured the worst of everything tried (about 6-7 px mean error at every size, vs ~4 for caps near 0.98-0.99). The gain of a cap over the original is modest on average (~15% below 1008 over 91 boxes; the single-box sweep that picked 0.987654321 showed ~63% at 420). `cap = 71/72` measured as good or better and is exactly a no-op at 1008, so it is the principled alternative. Full data, mechanism and rejected variants: `SAM3_test/GETCOORDS_INVESTIGATION.md`.
+
+`Sam3Wrapper.forward()` still clamps the final box to `[0,1]` as a safety net. Also: `_VisionEncoder.__init__` rewrites `position_ids`/position embeddings on the shared `Sam3Model`, so wrappers for different `imgsz` must not coexist on one model instance.
 
 ### ESAM3_test/ (experimental, export-only)
 
@@ -118,7 +120,7 @@ No DeepStream pipeline script exists for this variant — `infer_engine_efficien
 
 ### SAM3_test/ (investigation artifacts)
 
-Not code: `GETCOORDS_INVESTIGATION.md` plus csv sweeps and before/after jpgs documenting the `_get_coords` box-undershoot investigation above. Read the md before touching that patch.
+`GETCOORDS_INVESTIGATION.md` plus csv sweeps and before/after jpgs documenting the `_get_coords` box-undershoot investigation above, `bus.jpg` (Ultralytics sample, 810×1080) and two re-check scripts (`check_cap_multiimage.py`, `check_class_independence.py`; run from the repo root with `HF_TOKEN`). Read the md before touching that patch.
 
 ### DeepStream pipeline gotchas (measured on this hardware — RTX 50-series, driver 610.x, DS 9.1)
 

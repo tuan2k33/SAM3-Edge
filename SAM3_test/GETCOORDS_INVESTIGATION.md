@@ -4,9 +4,9 @@ Log of testing different cap values for the `_get_coords` fix in
 `SAM3Fixed/export.py` (and the matching one in
 `ESAM3_test/specialize_efficientsam3.py`). All tests use `test/bus.jpg`, the
 `facebook/sam3` checkpoint (via `transformers`), and a **2-class
-`['bus', 'person']` wrapper built together** — matching exactly what
-`export.py --classes bus person` actually bakes into the ONNX/engine (see
-"Important lesson" below for why this matters).
+`['bus', 'person']` wrapper**, matching what `export.py --classes bus person`
+bakes into the ONNX/engine. (A class's box does not depend on which other
+classes share the wrapper — checked, see "Re-check" below.)
 
 ## The original bug
 
@@ -220,22 +220,10 @@ H=72 (1008):  0.9861  deviation  0        <- the trained H
 H=100(1400):  0.9900  deviation +0.0039   <- OPPOSITE sign, explains why "before" flips sign at 1400
 ```
 
-## Important lesson: 1-class vs 2-class wrapper
-
-`Sam3Wrapper` bakes N classes by looping the decoder once per class —
-supposedly independent. Empirically, though: building the wrapper with
-`['bus']` alone gives a DIFFERENT box than building `['bus','person']`
-together (same image, same fix, same imgsz) — off by tens of pixels.
-**Root cause not yet identified** (suspect some cross-class effect inside
-the decoder, not traced down yet). Because of this, **every test in this
-file uses the 2-class wrapper**, verified to match the real built TRT engine
-exactly (`weight/sam3_1008_det_bus_person/sam3.engine`) — see
-`sam3_bus_person_engine_infer.jpg`.
-
 ## Current code state
 
 `SAM3Fixed/export.py` and `ESAM3_test/specialize_efficientsam3.py` now use
-**`cap=0.987654321`** (applied, not yet committed) — finalized after the
+**`cap=0.987654321`** (commit `ad04c53`) — finalized after the
 71-point sweep (see below) confirmed it beats both `cap=0.99` and a full
 `cap=1.00` on 3 of 4 spot-check sizes. `EfficientSAM3`'s value is carried
 over from this investigation (run entirely on the original SAM3), not
@@ -250,11 +238,47 @@ independently re-verified on its own decoder.
 | `sam3_3way_cap_{420,700,1008,1400}.jpg` | before(red)/cap0.99(green)/cap0.98(blue) |
 | `sam3_cap987654321_{420,700,1008,1400}.jpg` | before(red)/cap0.987654321(green) |
 
+## Re-check on more images (2026-10-22)
+
+Two claims from this log were re-tested with real weights (`facebook/sam3`), script in this folder.
+
+**1. "1-class and 2-class wrappers give different boxes" — not reproducible, removed.**
+`check_class_independence.py` builds `['bus']`, `['bus','person']`, `['person','bus']`, `['person']` on
+`bus.jpg`: the top box and score of each class are identical (0.00 px, both at imgsz 1008 and 420), for the
+current batch-folded `Sam3Wrapper` and for the old per-class-loop one. Text embeddings are computed per class
+and every decoder row only sees its own prompt, so classes cannot influence each other. (A real hazard found
+while testing: `_VisionEncoder.__init__` rewrites `position_ids` on the *shared* model, so wrappers built for
+different `imgsz` from the same `Sam3Model` instance corrupt each other — rebuild per `imgsz`. A harness that
+reuses one model across a sweep can produce spurious differences that look like this.)
+
+**2. "cap=0.987654321 is the best cap" — only true for the single bus box.**
+`check_cap_multiimage.py`: `bus.jpg` (bus+person) + 12 frames of a pedestrian video (person), 91 reference boxes,
+mean |coordinate deviation| (px) vs the original formula at 1008 (same proxy as above, not ground truth):
+
+| cap | 420 | 504 | 700 | 1008 | mean (<1008) |
+|---|---|---|---|---|---|
+| original (buggy) | 6.86 | 5.30 | 2.62 | 0.00 | 4.92 |
+| 0.98 | 5.63 | 4.44 | 2.62 | 2.26 | 4.23 |
+| **71/72 = 0.9861** | 5.66 | 4.38 | 2.25 | **0.00** | **4.10** |
+| 0.987654321 (current) | 5.69 | 4.44 | 2.40 | 0.57 | 4.18 |
+| 0.99 | 5.89 | 4.67 | 2.83 | 1.42 | 4.46 |
+| 1.00 | 7.25 | 6.16 | 5.29 | 5.08 | 6.23 |
+
+- `cap=1.00` is clearly the worst (confirmed).
+- The gain of any cap over the original is modest here (~15% at <1008, vs ~63% at 420 on the single bus box).
+- 71/72 is as good as or better than 0.987654321 on average, and is *exactly* the original grid at 1008
+  (`(H-1)/H = 71/72` at H=72), so it is a no-op at the native size; 0.987654321 shifts 1008 by ~0.6 px.
+  71/72 is also the max coordinate the box-RPB MLPs saw in training (see mechanism above), so it is the
+  principled choice. The code still uses 0.987654321; switching to 71/72 is a one-line change in `_COORDS_CAP`
+  (`SAM3Fixed/export.py`, `ESAM3_test/specialize_efficientsam3.py`).
+- Caveats: proxy metric only; at 420 only 34-55 of the 91 boxes match the 1008 reference at IoU >= 0.5, and the
+  matched subset differs per cap (see counts in the script output), so small differences between non-1.0 caps are
+  not significant.
+
 ## Not done yet / possible next steps
 
-- Test on more images/classes (currently only 1 image, 2 classes `bus`+
-  `person`) to make sure `cap=0.987654321` isn't overfit to this one image.
-- Trace the root cause of the 1-class vs 2-class wrapper discrepancy.
+- Decide on `_COORDS_CAP = 71/72` (see Re-check).
+- Re-check on labeled data (the proxy is the buggy model itself); `check_cap_multiimage.py` is the harness.
 - To remove the distribution-shift issue entirely: fine-tune the 3 MLPs
   (`box_rpb_embed_x/y`, `box_head`) with `_get_coords` fixed and held
   constant + L1/GIoU loss on real labeled data — needs a training loop
