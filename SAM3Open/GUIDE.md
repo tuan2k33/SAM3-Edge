@@ -30,7 +30,7 @@ infer_interval = 5
 run_seconds = 60
 ```
 
-Each camera gets **one free-text prompt** — never requires re-exporting, and up to `MAX_SOURCES=4` cameras (`sam3open_text.py`, matching `vision_decoder.engine`'s max batch; rebuild the engine with a bigger `--max-batch` to raise this).
+Each camera gets a **comma-separated class list** (`prompt = car, truck`) of up to `K_MAX=5` classes (`export.py --k-max`, must match `sam3open_text.K_MAX`) — changing prompts never requires re-exporting. Up to `MAX_SOURCES=4` cameras (`sam3open_text.py`, matching `vision_decoder.engine`'s max batch; rebuild the engine with a bigger `--max-batch` to raise this). Unused class slots still cost decoder time.
 
 > `config.txt` contains RTSP credentials — it is in `.gitignore` and never committed.
 
@@ -61,7 +61,7 @@ python3 ../export.py --imgsz 1008
 
 ```bash
 g++ -shared -fPIC -O2 -o libnvdsinfer_sam3.so nvdsparsebbox_sam3.cpp \
-    -I/opt/nvidia/deepstream/deepstream/sources/includes \
+    -I/opt/nvidia/deepstream/deepstream/includes \
     -I/usr/local/cuda-13.2/targets/x86_64-linux/include -std=c++14
 ```
 

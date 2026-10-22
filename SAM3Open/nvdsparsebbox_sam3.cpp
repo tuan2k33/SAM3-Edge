@@ -3,28 +3,29 @@
  *
  * Custom DeepStream plugin for SAM3Open/ (dynamic-prompt) vision_decoder.engine:
  *
- *   - NvDsInferInitializeInputLayers : injects text_features [32,256] float32
- *     + text_mask [32] uint8 (TensorRT reports this as BOOL, DeepStream maps
+ *   - NvDsInferInitializeInputLayers : injects text_features [K,32,256] float32
+ *     + text_mask [K,32] uint8 (TensorRT reports this as BOOL, DeepStream maps
  *     it to UINT8 -- verified empirically) as non-image input layers, one row
- *     per camera slot, read from two flat snapshot files written by
- *     sam3open_text.py (same directory):
- *         /dev/shm/sam3open_text_features.bin   MAX_SOURCES x 32 x 256  f32
- *         /dev/shm/sam3open_text_mask.bin       MAX_SOURCES x 32        u8
+ *     per camera slot (K class slots per row), read from two flat snapshot
+ *     files written by sam3open_text.py (same directory); the row size comes
+ *     from the layer dims, so K_MAX is not hardcoded here:
+ *         /dev/shm/sam3open_text_features.bin   MAX_SOURCES x K x 32 x 256  f32
+ *         /dev/shm/sam3open_text_mask.bin       MAX_SOURCES x K x 32        u8
  *     Called once per nvinfer context (re)load -- reloading the SAME
  *     config-file-path via nvinfer.set() re-triggers it without a pipeline
  *     restart or engine rebuild, verified against the real engine. nvinfer
  *     looks this up by this EXACT symbol name (dlsym); a custom name is
  *     silently never called.
  *
- *   - NvDsInferParseSam3OpenDet : parses `detections` [200,5] float32
- *     (x1 y1 x2 y2 score, pixel units, already scaled -- see
- *     DynamicVisionDecoderWrapper in export.py). Only one prompt per camera
- *     row, so there's no cls_id column -- classId is always 0; Python sets
- *     the display label from the camera's own current prompt string.
+ *   - NvDsInferParseSam3OpenDet : parses `detections` [K*200,6] float32
+ *     (x1 y1 x2 y2 score cls_id, pixel units, already scaled -- see
+ *     DynamicVisionDecoderWrapper in export.py). cls_id is the camera's class
+ *     slot; unused slots have score 0 and fall under the threshold. Python
+ *     maps (camera, cls_id) to the display label.
  *
  * Build (from this directory):
  *   g++ -shared -fPIC -O2 -o libnvdsinfer_sam3.so nvdsparsebbox_sam3.cpp \
- *       -I/opt/nvidia/deepstream/deepstream/sources/includes \
+ *       -I/opt/nvidia/deepstream/deepstream/includes \
  *       -I/usr/local/cuda-13.0/targets/x86_64-linux/include \
  *       -std=c++14
  */
@@ -52,7 +53,7 @@ static float iou_xyxy(float ax1, float ay1, float ax2, float ay2,
     return inter / (a + b - inter);
 }
 
-struct Det { float x1, y1, x2, y2, score; };
+struct Det { float x1, y1, x2, y2, score; int cls; };
 
 static size_t elemSize(NvDsInferDataType t)
 {
@@ -70,10 +71,27 @@ extern "C" bool NvDsInferInitializeInputLayers(
     NvDsInferNetworkInfo const &networkInfo,
     unsigned int maxBatchSize)
 {
+    unsigned int fileRows = 0, fileSlots = 0;
+    FILE *mf = fopen("/dev/shm/sam3open_text_meta.txt", "r");
+    if (!mf || fscanf(mf, "%u %u", &fileRows, &fileSlots) != 2) {
+        if (mf) fclose(mf);
+        printf("[SAM3Open] MISSING/bad /dev/shm/sam3open_text_meta.txt (write it before pipeline.start())\n");
+        return false;
+    }
+    fclose(mf);
+
     for (auto const &layer : inputLayers) {
         size_t es = elemSize(layer.dataType);
-        size_t rowBytes = layer.inferDims.numElements * es;
-        size_t totalBytes = rowBytes * maxBatchSize;
+        int slots = layer.inferDims.numDims > 0 ? layer.inferDims.d[0] : 0;
+        if (slots <= 0) {
+            printf("[SAM3Open] layer %s has unresolved slot dim (d[0]=%d)\n", layer.layerName, slots);
+            return false;
+        }
+        // per-slot bytes, from the layer's own dims; the engine's K may be
+        // smaller than the snapshot's K_MAX, so rows are re-strided here
+        size_t slotBytes = layer.inferDims.numElements * es / slots;
+        size_t rowBytes = slotBytes * slots;
+        size_t fileRowBytes = slotBytes * fileSlots;
         std::string path = std::string("/dev/shm/sam3open_") + layer.layerName + ".bin";
 
         FILE *f = fopen(path.c_str(), "rb");
@@ -81,14 +99,22 @@ extern "C" bool NvDsInferInitializeInputLayers(
             printf("[SAM3Open] MISSING snapshot %s (write it before pipeline.start())\n", path.c_str());
             return false;
         }
-        size_t rd = fread(layer.buffer, 1, totalBytes, f);
+        std::vector<char> src(fileRowBytes * fileRows);
+        size_t rd = fread(src.data(), 1, src.size(), f);
         fclose(f);
-        if (rd != totalBytes) {
-            printf("[SAM3Open] SHORT read %s: %zu/%zu bytes (maxBatchSize=%u)\n",
-                   path.c_str(), rd, totalBytes, maxBatchSize);
+        if (rd != src.size()) {
+            printf("[SAM3Open] SHORT read %s: %zu/%zu bytes\n", path.c_str(), rd, src.size());
             return false;
         }
-        printf("[SAM3Open] loaded %s: %u rows x %zu bytes\n", layer.layerName, maxBatchSize, rowBytes);
+        char *dst = (char *)layer.buffer;
+        memset(dst, 0, rowBytes * maxBatchSize);
+        size_t copySlots = std::min((size_t)slots, (size_t)fileSlots);
+        if ((size_t)slots < fileSlots)
+            printf("[SAM3Open] WARNING: engine has %d class slots < snapshot K_MAX=%u, extra classes are dropped\n", slots, fileSlots);
+        for (unsigned int r = 0; r < maxBatchSize && r < fileRows; ++r)
+            memcpy(dst + r * rowBytes, src.data() + r * fileRowBytes, copySlots * slotBytes);
+        printf("[SAM3Open] loaded %s: %u rows x %d slots x %zu bytes (file: %u slots)\n",
+               layer.layerName, maxBatchSize, slots, slotBytes, fileSlots);
     }
     fflush(stdout);
     return true;
@@ -118,12 +144,12 @@ bool NvDsInferParseSam3OpenDet(
     std::vector<Det> candidates;
     candidates.reserve(16);
     for (int i = 0; i < N; ++i) {
-        const float *row = d + i * 5;
+        const float *row = d + i * 6;
         float score = row[4];
         if (score < thresh) continue;
         float x1 = row[0], y1 = row[1], x2 = row[2], y2 = row[3];
         if (x2 <= x1 || y2 <= y1) continue;
-        candidates.push_back({x1, y1, x2, y2, score});
+        candidates.push_back({x1, y1, x2, y2, score, (int)(row[5] + 0.5f)});
     }
     std::sort(candidates.begin(), candidates.end(),
               [](const Det &a, const Det &b){ return a.score > b.score; });
@@ -132,7 +158,7 @@ bool NvDsInferParseSam3OpenDet(
     for (size_t i = 0; i < candidates.size(); ++i) {
         if (sup[i]) continue;
         for (size_t j = i + 1; j < candidates.size(); ++j) {
-            if (sup[j]) continue;
+            if (sup[j] || candidates[j].cls != candidates[i].cls) continue;
             if (iou_xyxy(candidates[i].x1, candidates[i].y1, candidates[i].x2, candidates[i].y2,
                          candidates[j].x1, candidates[j].y1, candidates[j].x2, candidates[j].y2) > NMS_IOU_THRESH)
                 sup[j] = true;
@@ -142,7 +168,7 @@ bool NvDsInferParseSam3OpenDet(
     for (size_t i = 0; i < candidates.size(); ++i) {
         if (sup[i]) continue;
         NvDsInferObjectDetectionInfo obj = {};
-        obj.classId             = 0;
+        obj.classId             = candidates[i].cls;
         obj.detectionConfidence = candidates[i].score;
         obj.left                = candidates[i].x1;
         obj.top                 = candidates[i].y1;

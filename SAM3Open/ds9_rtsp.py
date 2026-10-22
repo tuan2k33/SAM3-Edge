@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
 Production DeepStream 9 RTSP pipeline for the SAM3Open (dynamic-prompt)
-architecture -- each camera gets its own free-text prompt, ONE shared
-nvinfer element (vision_decoder.engine) scores every camera's frame
-against its own prompt in the SAME batched forward pass: the text
-encoding for camera b's prompt is injected into batch row b as a
-non-image input layer (see nvdsparsebbox_sam3.cpp + sam3open_text.py), so
-there is no per-class loop and no engine rebuild when a prompt changes.
+architecture -- each camera gets its own comma-separated class list, ONE
+shared nvinfer element (vision_decoder.engine) scores every camera's frame
+against its own classes in the SAME batched forward pass: each class is
+encoded to its own text embedding and injected into slot k of batch row b
+(camera b) as a non-image input layer (see nvdsparsebbox_sam3.cpp +
+sam3open_text.py). Inside the graph the ViT runs once per image and the K_MAX
+slots ride the batch axis through the DETR decoder; detections carry the
+slot index as cls_id. No engine rebuild when a prompt changes.
 
 Prompts are hot-reloadable: edit config.txt while running and the pipeline
 re-encodes any new prompt (../weight/sam3_1008_open/text_encoder.engine,
@@ -16,14 +18,13 @@ NvDsInferInitializeInputLayers, verified empirically) -- no GStreamer
 restart, and unlike SAM3Fixed's hot-reload, no TensorRT engine rebuild at
 all, since the engine itself never changes.
 
-Limitation: one prompt per camera (not a class list) -- vision_decoder.onnx
-pairs one image with one encoded prompt per batch row. For multiple
-classes per camera, use ../SAM3Fixed/ds9_rtsp.py instead (baked union-class
-engine, cost scales with class count).
+Limit: at most K_MAX classes per camera (sam3open_text.K_MAX, baked into the
+engine at export time via export.py --k-max); decoder cost is paid for all
+K_MAX slots of every camera whether used or not.
 
 Reads all settings from config.txt (or $DS_CONFIG override):
   [sources]  urls          -- one RTSP url per line, in camera-index order
-  [camN]     prompt         -- that camera's open-vocab prompt (required)
+  [camN]     prompt         -- that camera's classes, comma-separated (required)
   [model]    conf           -- score threshold
   [pipeline] width, height, infer_interval, run_seconds, output_file
 
@@ -82,7 +83,12 @@ def read_config():
         sec = f"cam{i}"
         if not cfg.has_section(sec) or not cfg.get(sec, "prompt", fallback=""):
             sys.exit(f"ERROR: config.txt is missing [{sec}]/prompt")
-        camera_prompts[i] = cfg.get(sec, "prompt").strip()
+        camera_prompts[i] = sam3open_text.split_classes(cfg.get(sec, "prompt"))
+        if not camera_prompts[i]:
+            sys.exit(f"ERROR: config.txt [{sec}]/prompt has no class")
+        if len(camera_prompts[i]) > sam3open_text.K_MAX:
+            sys.exit(f"ERROR: [{sec}] has {len(camera_prompts[i])} classes > K_MAX={sam3open_text.K_MAX} "
+                      f"(vision_decoder.engine's class slots -- re-export with a bigger --k-max)")
 
     pcfg = dict(
         width=cfg.getint("pipeline", "width", fallback=1280),
@@ -104,7 +110,7 @@ def write_infer_config(batch_size, conf):
 gpu-id=0
 
 model-engine-file={VISION_ENGINE}
-num-detected-classes=1
+num-detected-classes={sam3open_text.K_MAX}
 batch-size={batch_size}
 
 net-scale-factor=0.00784313725490196
@@ -119,8 +125,8 @@ infer-dims=3;{IMGSZ};{IMGSZ}
 cluster-mode=4
 gie-unique-id=2
 
-# detections [200,5] float32  x1 y1 x2 y2 score (pixel units, no cls_id --
-# one prompt per camera row, see nvdsparsebbox_sam3.cpp)
+# detections [K_MAX*200,6] float32  x1 y1 x2 y2 score cls_id (pixel units;
+# cls_id = the camera's class slot, see nvdsparsebbox_sam3.cpp)
 output-blob-names=detections
 
 parse-bbox-func-name=NvDsInferParseSam3OpenDet
@@ -133,9 +139,9 @@ pre-cluster-threshold={conf}
 
 
 class PromptLabeler(BatchMetadataOperator):
-    """classId is always 0 (open-vocab has no fixed label vocabulary) -- sets
-    the display label from the camera's own current prompt string instead.
-    prompts can be updated LIVE by the watcher thread, guarded by a Lock
+    """classId is the camera's class slot (open-vocab has no fixed label
+    vocabulary) -- sets the display label from that camera's own current class
+    list. Classes can be updated LIVE by the watcher thread, guarded by a Lock
     since handle_metadata() runs on GStreamer's own thread."""
 
     def __init__(self, camera_prompts):
@@ -152,14 +158,16 @@ class PromptLabeler(BatchMetadataOperator):
             prompts = self.prompts
         for frame_meta in batch_meta.frame_items:
             cam = frame_meta.pad_index
-            name = prompts.get(cam, "?")
+            classes = prompts.get(cam, [])
             confs = []
             for obj in frame_meta.object_items:
                 conf = float(obj.confidence)
+                cls = int(obj.class_id)
+                name = classes[cls] if 0 <= cls < len(classes) else "?"
                 obj.text_params.display_text = f"{name} {conf:.2f}" if conf > 0.05 else name
                 confs.append(conf)
             if confs:
-                print(f"  cam{cam} '{name}' #{frame_meta.frame_number}: "
+                print(f"  cam{cam} {classes} #{frame_meta.frame_number}: "
                       f"×{len(confs)} avg={sum(confs)/len(confs):.2f} max={max(confs):.2f}", flush=True)
 
 

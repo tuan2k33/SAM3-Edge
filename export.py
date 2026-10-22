@@ -57,6 +57,8 @@ def export_open_vocab(args):
         "--imgsz", str(args.imgsz),
         "--opset", str(args.opset),
         "--device", args.device,
+        "--k-max", str(args.k_max),
+        *(["--skip-trt"] if args.skip_trt else []),
         # no --output-dir: SAM3Open/export.py defaults to the shared
         # ../weight/sam3_{imgsz}_open/ folder
     ]
@@ -77,7 +79,9 @@ def main():
     p.add_argument("--min-batch", type=int, default=1)
     p.add_argument("--opt-batch", type=int, default=4)
     p.add_argument("--max-batch", type=int, default=16)
-    p.add_argument("--skip-trt", action="store_true", help="only applies to the --prompt (baked) branch")
+    p.add_argument("--k-max", type=int, default=5,
+                    help="only applies to the open-vocab branch: class slots per camera (default 5)")
+    p.add_argument("--skip-trt", action="store_true", help="only write ONNX, skip the trtexec engine build")
     args = p.parse_args()
 
     if args.prompt:

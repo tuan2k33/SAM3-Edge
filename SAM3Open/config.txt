@@ -3,15 +3,15 @@ urls =
     rtsp://cam0
     rtsp://cam1
 
-# One free-text prompt per camera (open-vocabulary -- no re-export needed to
-# change these). Up to MAX_SOURCES=4 cameras (sam3open_text.py), matching
-# vision_decoder.engine's max batch. Edit while the pipeline is running to
-# hot-swap prompts, see ds9_open_rtsp.py.
+# Comma-separated class list per camera (open-vocabulary -- no re-export needed
+# to change these), up to K_MAX=5 classes each. Up to MAX_SOURCES=4 cameras
+# (sam3open_text.py), matching vision_decoder.engine's max batch. Edit while
+# the pipeline is running to hot-swap prompts, see ds9_rtsp.py.
 [cam0]
-prompt = bus
+prompt = bus, truck
 
 [cam1]
-prompt = car
+prompt = car, person
 
 [model]
 conf = 0.3
