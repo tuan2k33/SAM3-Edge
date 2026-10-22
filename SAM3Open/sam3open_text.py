@@ -2,7 +2,7 @@
 Text-encoder + non-image-input-snapshot helper for the SAM3Open + DeepStream
 pipeline (ds9_rtsp.py).
 
-Runs ../weight/sam3_1008_open/text_encoder.engine directly via TensorRT --
+Runs ../weight/sam3_{imgsz}_open/text_encoder.engine directly via TensorRT --
 NOT through nvinfer, which only ever runs the vision decoder. The text
 encoder runs once per unique prompt (cached), here in Python, and the
 result is written into two flat snapshot files that
@@ -35,14 +35,11 @@ MAX_SOURCES = 4
 K_MAX = 5  # class slots per camera; must match vision_decoder.engine (export.py --k-max)
 CTX_LEN = 32
 FEAT_DIM = 256
-IMGSZ = 1008  # vision_decoder.engine was only ever exported at this size
 
 
-def open_dir_for(imgsz=IMGSZ):
+def open_dir_for(imgsz):
     return os.environ.get("SAM3OPEN_DIR") or os.path.join(WEIGHT_DIR, f"sam3_{imgsz}_open")
 
-
-TEXT_ENGINE = os.path.join(open_dir_for(), "text_encoder.engine")
 
 SNAPSHOT_FEATURES = "/dev/shm/sam3open_text_features.bin"
 SNAPSHOT_MASK = "/dev/shm/sam3open_text_mask.bin"
@@ -52,11 +49,11 @@ SNAPSHOT_META = "/dev/shm/sam3open_text_meta.txt"  # "MAX_SOURCES K_MAX": file r
 class TextEncoder:
     """Loads text_encoder.engine once, encodes prompt strings on demand."""
 
-    def __init__(self):
+    def __init__(self, engine_path):
         from transformers.models.sam3 import Sam3Processor
         self.processor = Sam3Processor.from_pretrained("facebook/sam3")
         logger = trt.Logger(trt.Logger.ERROR)
-        self.engine = trt.Runtime(logger).deserialize_cuda_engine(open(TEXT_ENGINE, "rb").read())
+        self.engine = trt.Runtime(logger).deserialize_cuda_engine(open(engine_path, "rb").read())
         self.ctx = self.engine.create_execution_context()
         self._cache = {}  # prompt string -> (text_features[32,256] f32, text_mask[32] u8)
 

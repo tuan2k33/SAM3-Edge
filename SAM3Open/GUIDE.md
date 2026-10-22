@@ -70,7 +70,9 @@ g++ -shared -fPIC -O2 -o libnvdsinfer_sam3.so nvdsparsebbox_sam3.cpp \
 ## Note on ONNX/engine resolution
 
 Both the ONNX graphs and the TRT engines have `imgsz` (H and W) hardcoded at
-1008x1008 — only `batch` is a dynamic axis. This isn't just a build-time
+export time (default 1008x1008; `export.py --imgsz 420` gives a much lighter
+model, output in `weight/sam3_420_open/`) — only `batch` is a dynamic axis.
+`ds9_rtsp.py` reads the matching size from `config.txt` `[model] imgsz`. This isn't just a build-time
 engine-profile choice: `_VisionEncoder.__init__` (imported from
 `SAM3Fixed/export.py`) rebuilds each ViT layer's `rotary_emb` and re-tiles the
 absolute position embedding for a specific `Hp,Wp` grid *at trace time* (not

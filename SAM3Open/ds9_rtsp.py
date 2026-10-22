@@ -11,7 +11,7 @@ slots ride the batch axis through the DETR decoder; detections carry the
 slot index as cls_id. No engine rebuild when a prompt changes.
 
 Prompts are hot-reloadable: edit config.txt while running and the pipeline
-re-encodes any new prompt (../weight/sam3_1008_open/text_encoder.engine,
+re-encodes any new prompt (../weight/sam3_{imgsz}_open/text_encoder.engine,
 via sam3open_text.py), rewrites the snapshot files, and reloads nvinfer's
 context via config-file-path set() (SAME path -- this re-triggers
 NvDsInferInitializeInputLayers, verified empirically) -- no GStreamer
@@ -26,6 +26,7 @@ Reads all settings from config.txt (or $DS_CONFIG override):
   [sources]  urls          -- one RTSP url per line, in camera-index order
   [camN]     prompt         -- that camera's classes, comma-separated (required)
   [model]    conf           -- score threshold
+             imgsz          -- must match the exported engine (default 1008)
   [pipeline] width, height, infer_interval, run_seconds, output_file
 
 Usage:
@@ -51,7 +52,15 @@ import sam3open_text
 
 TRACKER_LIB = "/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so"
 CONFIG_PATH = Path(os.environ.get("DS_CONFIG", str(_HERE / "config.txt")))
-IMGSZ = 1008  # vision_decoder.engine was only built for this size
+
+
+def _config_imgsz():
+    cfg = configparser.ConfigParser()
+    cfg.read(CONFIG_PATH)
+    return cfg.getint("model", "imgsz", fallback=1008)
+
+
+IMGSZ = _config_imgsz()  # must match the imgsz vision_decoder.engine was exported with (read once at startup)
 OPEN_DIR = sam3open_text.open_dir_for(IMGSZ)  # ../weight/sam3_{imgsz}_open/
 VISION_ENGINE = os.path.join(OPEN_DIR, "vision_decoder.engine")
 LIB_PATH = str(_HERE / "libnvdsinfer_sam3.so")
@@ -148,6 +157,10 @@ class PromptLabeler(BatchMetadataOperator):
         super().__init__()
         self.lock = threading.Lock()
         self.prompts = dict(camera_prompts)
+        # (cam -> {track id: last detection score}): tracker-only frames carry
+        # confidence <= 0, so without this the label flips between "person 0.86"
+        # and "person" every infer_interval frames
+        self.last_conf = {}
 
     def update(self, camera_prompts):
         with self.lock:
@@ -159,13 +172,18 @@ class PromptLabeler(BatchMetadataOperator):
         for frame_meta in batch_meta.frame_items:
             cam = frame_meta.pad_index
             classes = prompts.get(cam, [])
+            prev = self.last_conf.get(cam, {})
+            cur = {}
             confs = []
             for obj in frame_meta.object_items:
                 conf = float(obj.confidence)
                 cls = int(obj.class_id)
                 name = classes[cls] if 0 <= cls < len(classes) else "?"
-                obj.text_params.display_text = f"{name} {conf:.2f}" if conf > 0.05 else name
+                shown = conf if conf > 0.05 else prev.get(obj.object_id)
+                cur[obj.object_id] = shown
+                obj.text_params.display_text = f"{name} {shown:.2f}" if shown else name
                 confs.append(conf)
+            self.last_conf[cam] = cur
             if confs:
                 print(f"  cam{cam} {classes} #{frame_meta.frame_number}: "
                       f"×{len(confs)} avg={sum(confs)/len(confs):.2f} max={max(confs):.2f}", flush=True)
@@ -178,14 +196,21 @@ def build_pipeline(sources, width, height, infer_interval, infer_config, lbl, ou
     for uri, name in zip(sources, names):
         p.add("nvurisrcbin", name, {"uri": uri, "latency": 500, "drop-on-latency": True})
 
-    p.add("nvstreammux", "mux", {
+    mux_props = {
         "batch-size":           len(sources),
         "width":                width,
         "height":               height,
-        "live-source":          True,
+        # file sources keep their own timestamps; live-stamping them stretches the
+        # output and the ffmpeg re-encode then drops frames
+        "live-source":          not all(s.startswith("file:") for s in sources),
         "batched-push-timeout": 40000,
         "compute-hw":           1,
-    })
+    }
+    # WSL2: nvv4l2decoder -> nvstreammux fails to link with the default (device)
+    # buffers; DS_NVBUF_MEMTYPE=1 (pinned) fixes it. Unset on Jetson/bare metal.
+    if os.environ.get("DS_NVBUF_MEMTYPE"):
+        mux_props["nvbuf-memory-type"] = int(os.environ["DS_NVBUF_MEMTYPE"])
+    p.add("nvstreammux", "mux", mux_props)
     for name in names:
         p.link((name, "mux"), ("vsrc_%u", ""))
 
@@ -285,7 +310,7 @@ def main():
 
     print(f"[open] {len(sources)} cams  prompts={camera_prompts}")
 
-    encoder = sam3open_text.TextEncoder()
+    encoder = sam3open_text.TextEncoder(os.path.join(OPEN_DIR, "text_encoder.engine"))
     sam3open_text.write_snapshot(encoder, camera_prompts)
     infer_config = write_infer_config(len(sources), conf)
     print(f"[open] snapshot written, infer config: {infer_config}")

@@ -28,3 +28,6 @@ build/
 *.swp
 .env
 .venv
+
+# pipeline output videos
+output/

@@ -117,6 +117,10 @@ class PerCameraFilter(BatchMetadataOperator):
         self.lock = threading.Lock()
         self.union = union_classes
         self.allow = cam_to_cls_ids
+        # (cam -> {track id: last detection score}): tracker-only frames carry
+        # confidence <= 0, so without this the label flips between "car 0.86"
+        # and "car" every infer_interval frames
+        self.last_conf = {}
 
     def update(self, union_classes, cam_to_cls_ids):
         with self.lock:
@@ -130,12 +134,16 @@ class PerCameraFilter(BatchMetadataOperator):
             cam = frame_meta.pad_index
             allowed = set(allow.get(cam, []))
             cls_conf = {}
+            prev = self.last_conf.get(cam, {})
+            cur = {}
             for obj in frame_meta.object_items:
                 cls = int(obj.class_id)
                 name = union[cls] if cls < len(union) else str(cls)
                 if cls in allowed:
                     conf = float(obj.confidence)
-                    obj.text_params.display_text = f"{name} {conf:.2f}" if conf > 0.05 else name
+                    shown = conf if conf > 0.05 else prev.get(obj.object_id)
+                    cur[obj.object_id] = shown
+                    obj.text_params.display_text = f"{name} {shown:.2f}" if shown else name
                     cls_conf.setdefault(name, []).append(conf)
                 else:
                     obj.rect_params.border_width = 0
@@ -144,6 +152,7 @@ class PerCameraFilter(BatchMetadataOperator):
                     # clearing the text alone still leaves the label
                     # background (a black box) -- must turn that off too
                     obj.text_params.set_bg_clr = 0
+            self.last_conf[cam] = cur
             if cls_conf:
                 parts = [f"{n}×{len(cs)} avg={sum(cs)/len(cs):.2f} max={max(cs):.2f}"
                          for n, cs in cls_conf.items()]
@@ -157,14 +166,21 @@ def build_pipeline(sources, width, height, infer_interval, infer_config, mode, f
     for uri, name in zip(sources, names):
         p.add("nvurisrcbin", name, {"uri": uri, "latency": 500, "drop-on-latency": True})
 
-    p.add("nvstreammux", "mux", {
+    mux_props = {
         "batch-size":           len(sources),
         "width":                width,
         "height":               height,
-        "live-source":          True,
+        # file sources keep their own timestamps; live-stamping them stretches the
+        # output and the ffmpeg re-encode then drops frames
+        "live-source":          not all(s.startswith("file:") for s in sources),
         "batched-push-timeout": 40000,
         "compute-hw":           1,
-    })
+    }
+    # WSL2: nvv4l2decoder -> nvstreammux fails to link with the default (device)
+    # buffers; DS_NVBUF_MEMTYPE=1 (pinned) fixes it. Unset on Jetson/bare metal.
+    if os.environ.get("DS_NVBUF_MEMTYPE"):
+        mux_props["nvbuf-memory-type"] = int(os.environ["DS_NVBUF_MEMTYPE"])
+    p.add("nvstreammux", "mux", mux_props)
     for name in names:
         p.link((name, "mux"), ("vsrc_%u", ""))
 
