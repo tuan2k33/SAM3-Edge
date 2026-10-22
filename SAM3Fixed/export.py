@@ -52,7 +52,7 @@ from transformers.models.sam3.modeling_sam3 import Sam3DetrDecoder, Sam3ViTRotar
 # train/inference distribution shift than the network was calibrated for --
 # a full 1.0 cap measured worst on every imgsz tested (verified against a
 # groundtruth proxy across a 71-point sweep, imgsz 420-1400 step 14; see
-# SAM3-DeepStream/SAM3_test/GETCOORDS_INVESTIGATION.md for the full
+# SAM3-Edge/SAM3_test/GETCOORDS_INVESTIGATION.md for the full
 # writeup, sweep data, and everything else that was tried and rejected:
 # cap=0.98, patch-center convention, /(H-0.9), post-hoc pixel shifts).
 # cap=0.987654321 measured the best mean box-coordinate error against that
@@ -117,9 +117,14 @@ class _VisionEncoder(nn.Module):
                 continue
             cfg = getattr(layer, "config", bb.config)
             scale = cfg.window_size / Hp
-            layer.rotary_emb = Sam3ViTRotaryEmbedding(
-                cfg, end_x=Hp, end_y=Wp, scale=scale
-            ).to(device)
+            if hasattr(layer, "position_ids"):
+                hh, ww = torch.meshgrid(torch.arange(Hp), torch.arange(Wp), indexing="ij")
+                pos = torch.stack([ww.flatten(), hh.flatten()], dim=-1) * scale
+                layer.position_ids = pos.to(device)
+            else:
+                layer.rotary_emb = Sam3ViTRotaryEmbedding(
+                    cfg, end_x=Hp, end_y=Wp, scale=scale
+                ).to(device)
 
         orig = bb.embeddings.position_embeddings.data
         n0   = int(orig.shape[1] ** 0.5)
@@ -265,9 +270,8 @@ class Sam3Wrapper(nn.Module):
             self.vision_enc = _VisionEncoder(sam3, device, imgsz)
             self.decoder    = _Decoder(sam3)
 
-        for i in range(self.num_classes):
-            self.register_buffer(f"text_feat_{i}", text_embeds_all[i:i+1])
-            self.register_buffer(f"text_mask_{i}", attn_masks_all[i:i+1] > 0)
+        self.register_buffer("text_feat_all", text_embeds_all)
+        self.register_buffer("text_mask_all", attn_masks_all > 0)
 
         self.register_buffer(
             "scale",
@@ -292,48 +296,54 @@ class Sam3Wrapper(nn.Module):
         else:
             fpn2, fpn_pos = self.vision_enc(pixel_values)
 
-        det_chunks  = []
-        mask_chunks = []
+        N = self.num_classes
 
-        for i in range(self.num_classes):
-            text_feat = getattr(self, f"text_feat_{i}").expand(B, -1, -1)
-            text_mask = getattr(self, f"text_mask_{i}").expand(B, -1)
-
-            if self.with_mask:
-                pred_boxes, pred_logits, dec_queries, enc_hidden, presence = self.decoder(
-                    fpn2, fpn_pos, text_feat, text_mask
-                )
-                protos = self._prototypes(fpn0, fpn1, enc_hidden)
-                coeffs = self.mask_embedder(dec_queries)
-                masks  = torch.einsum("bqk,bkhw->bqhw", coeffs, protos).sigmoid()
-                masks  = F.interpolate(masks, (36, 36), mode="bilinear", align_corners=False).half()
-                mask_chunks.append(masks)
-            else:
-                pred_boxes, pred_logits, presence = self.decoder(fpn2, fpn_pos, text_feat, text_mask)
-
-            # The _get_coords denom fix (module top) can push an
-            # already-near-edge box slightly outside the frame (e.g.
-            # x2=1.01) -- clip back into [0,1] before scaling to pixels.
-            pred_boxes = pred_boxes.clamp(0.0, 1.0)
-
-            boxes_px = pred_boxes * self.scale
-            # SAM3's final detection score is the per-query score gated by a
-            # scene-level presence token (HF transformers documents:
-            #   final_scores = pred_logits.sigmoid() * presence_logits.sigmoid()).
-            # Without the presence gate, concepts that are ABSENT from the scene
-            # (e.g. "human face" on a vehicle windshield) are not suppressed and
-            # leak as high-confidence false positives.
-            scores   = (pred_logits.sigmoid() * presence.sigmoid()).unsqueeze(-1)
-            cls_id   = torch.full(
-                (B, pred_boxes.shape[1], 1), float(i),
-                dtype=pred_boxes.dtype, device=pred_boxes.device,
-            )
-            det_chunks.append(torch.cat([boxes_px, scores, cls_id], dim=-1))
-
-        detections = torch.cat(det_chunks, dim=1).half()  # [B, N_cls*Q, 6] fp16
+        # Classes ride the batch axis: row b*N+i = image b x class i, so the
+        # DETR decoder runs once instead of once per class. The ViT backbone
+        # already ran once; only its outputs are repeated.
+        fpn2    = fpn2.repeat_interleave(N, dim=0)
+        fpn_pos = fpn_pos.repeat_interleave(N, dim=0)
+        text_feat = self.text_feat_all.repeat(B, 1, 1)
+        text_mask = self.text_mask_all.repeat(B, 1)
 
         if self.with_mask:
-            return detections, torch.cat(mask_chunks, dim=1)  # [B, N_cls*Q, Hm, Wm] fp16
+            fpn0 = fpn0.repeat_interleave(N, dim=0)
+            fpn1 = fpn1.repeat_interleave(N, dim=0)
+            pred_boxes, pred_logits, dec_queries, enc_hidden, presence = self.decoder(
+                fpn2, fpn_pos, text_feat, text_mask
+            )
+            protos = self._prototypes(fpn0, fpn1, enc_hidden)
+            coeffs = self.mask_embedder(dec_queries)
+            masks  = torch.einsum("bqk,bkhw->bqhw", coeffs, protos).sigmoid()
+            masks  = F.interpolate(masks, (36, 36), mode="bilinear", align_corners=False).half()
+            Q = masks.shape[1]
+            masks = masks.reshape(B, N * Q, *masks.shape[2:])  # class-major: query i -> class i // Q
+        else:
+            pred_boxes, pred_logits, presence = self.decoder(fpn2, fpn_pos, text_feat, text_mask)
+
+        # The _get_coords denom fix (module top) can push an
+        # already-near-edge box slightly outside the frame (e.g.
+        # x2=1.01) -- clip back into [0,1] before scaling to pixels.
+        pred_boxes = pred_boxes.clamp(0.0, 1.0)
+
+        boxes_px = pred_boxes * self.scale
+        # SAM3's final detection score is the per-query score gated by a
+        # scene-level presence token (HF transformers documents:
+        #   final_scores = pred_logits.sigmoid() * presence_logits.sigmoid()).
+        # Without the presence gate, concepts that are ABSENT from the scene
+        # (e.g. "human face" on a vehicle windshield) are not suppressed and
+        # leak as high-confidence false positives.
+        scores = (pred_logits.sigmoid() * presence.sigmoid()).unsqueeze(-1)
+        Q = pred_boxes.shape[1]
+        cls_id = (
+            torch.arange(N, dtype=pred_boxes.dtype, device=pred_boxes.device)
+            .repeat(B).view(B * N, 1, 1).expand(-1, Q, 1)
+        )
+        detections = torch.cat([boxes_px, scores, cls_id], dim=-1)
+        detections = detections.reshape(B, N * Q, 6).half()  # [B, N_cls*Q, 6] fp16
+
+        if self.with_mask:
+            return detections, masks  # [B, N_cls*Q, Hm, Wm] fp16
         return detections
 
 

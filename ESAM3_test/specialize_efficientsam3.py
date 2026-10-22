@@ -97,7 +97,7 @@ from build_mixed_precision_engine import build as build_mixed_precision_engine
 # SAM3Fixed/export.py's much more thorough investigation on the original
 # SAM3 -- a 71-point sweep (imgsz 420-1400) against a groundtruth proxy
 # found it beats both a full 1.0 cap and cap=0.99 on 3 of 4 spot-check
-# sizes (see SAM3-DeepStream/SAM3_test/GETCOORDS_INVESTIGATION.md for the
+# sizes (see SAM3-Edge/SAM3_test/GETCOORDS_INVESTIGATION.md for the
 # full writeup). That investigation was run entirely on SAM3Fixed's
 # Sam3DetrDecoder, not independently re-verified against this vendored
 # EfficientSAM3 decoder -- carried over as the best available estimate
