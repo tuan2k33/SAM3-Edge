@@ -1,8 +1,8 @@
-# SAM3-DeepStream
+# SAM3-Edge
 
 Real-time open-vocabulary detection and instance segmentation on multi-camera RTSP streams using [SAM3](https://github.com/facebookresearch/sam3) and NVIDIA DeepStream 9.
 
-**Workflow:** write a `config.txt` → run the pipeline script for the architecture you want (`SAM3Fixed/ds9_rtsp.py` or `SAM3Open/ds9_open_rtsp.py`) → saves annotated mp4. Setup steps live in [SAM3Fixed/GUIDE.md](SAM3Fixed/GUIDE.md) and [SAM3Open/GUIDE.md](SAM3Open/GUIDE.md).
+**Workflow:** write a `config.txt` → run the pipeline script for the architecture you want (`SAM3Fixed/ds9_rtsp.py` or `SAM3Open/ds9_rtsp.py`) → saves annotated mp4. Setup steps live in [SAM3Fixed/GUIDE.md](SAM3Fixed/GUIDE.md) and [SAM3Open/GUIDE.md](SAM3Open/GUIDE.md).
 
 ---
 
@@ -177,7 +177,7 @@ ever needed for a prompt change, unlike SAM3Fixed.
 ## File structure
 
 ```
-SAM3-DeepStream/
+SAM3-Edge/
 ├── export.py                    # unified export dispatcher: --prompt <classes> → SAM3Fixed/export.py
 │                                # no --prompt → SAM3Open/export.py
 ├── bench_stages.py              # per-stage throughput: decode fps, text encoder, vision decoder, baked engine
@@ -197,7 +197,7 @@ SAM3-DeepStream/
 │   ├── export.py                # export text-encoder + vision-decoder engines (not baked)
 │   ├── nvdsparsebbox_sam3.cpp   # non-image input injector + output parser
 │   ├── libnvdsinfer_sam3.so     # compiled
-│   ├── ds9_open_rtsp.py         # multi-cam pipeline, one free-text prompt per camera, hot-reload
+│   ├── ds9_rtsp.py              # multi-cam pipeline, comma-separated class list per camera, hot-reload
 │   ├── sam3open_text.py         # text encoder + non-image-input snapshot writer
 │   ├── config.txt               # sources + per-camera free-text prompts
 │   ├── config_tracker_NvSORT_i5.yml

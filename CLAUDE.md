@@ -31,7 +31,7 @@ Run the SAM3Fixed pipeline (baked classes, multi-class per camera, engine auto-b
 cd SAM3Fixed && python3 ds9_rtsp.py    # reads config.txt; edit it live to hot-swap prompts
 ```
 
-Run the SAM3Open pipeline (open-vocab, one free-text prompt per camera, up to 4 cameras):
+Run the SAM3Open pipeline (open-vocab, comma-separated class list per camera, up to 4 cameras × K_MAX=5 classes):
 ```bash
 cd SAM3Open && python3 ds9_rtsp.py   # reads config.txt; edit it live to hot-swap prompts
 ```
@@ -39,11 +39,11 @@ cd SAM3Open && python3 ds9_rtsp.py   # reads config.txt; edit it live to hot-swa
 Recompile a custom DeepStream parser after editing its `.cpp` (each folder is self-contained):
 ```bash
 cd SAM3Fixed && g++ -shared -fPIC -O2 -o libnvdsinfer_sam3.so nvdsparsebbox_sam3.cpp \
-    -I/opt/nvidia/deepstream/deepstream/sources/includes \
+    -I/opt/nvidia/deepstream/deepstream/includes \
     -I/usr/local/cuda-13.2/targets/x86_64-linux/include -std=c++14
 
 cd SAM3Open && g++ -shared -fPIC -O2 -o libnvdsinfer_sam3.so nvdsparsebbox_sam3.cpp \
-    -I/opt/nvidia/deepstream/deepstream/sources/includes \
+    -I/opt/nvidia/deepstream/deepstream/includes \
     -I/usr/local/cuda-13.2/targets/x86_64-linux/include -std=c++14
 ```
 
@@ -71,7 +71,7 @@ python3 infer_engine_efficientsam3.py efficientsam3_1008_det_truck bus.jpg --con
 
 **`SAM3Fixed/`** — classes are baked into the ONNX graph at export time as constants (`export.py`, formerly `specialize.py`). The resulting engine takes only an image as input and outputs detections directly, running natively in `nvinfer` exactly like a YOLO model. Changing classes requires re-exporting (or hot-swapping to a different already-built engine, see Multi-camera union-prompt pattern below). Multiple classes per camera are supported (cost scales with class count — see `Sam3Wrapper` below).
 
-**`SAM3Open/`** — open-vocabulary: the prompt is encoded into a tensor at runtime instead of being baked in (`export.py`, formerly `export_onnx_dynamic.py`, produces a separate `text_encoder.engine` + `vision_decoder.engine`, built once, never re-exported). `ds9_rtsp.py` is a real, working camera pipeline: each camera gets exactly ONE free-text prompt (not a class list — `vision_decoder.engine` pairs one image with one encoded prompt per batch row), and up to `MAX_SOURCES=4` cameras (matching the engine's max profile batch — `sam3open_text.py`) are scored in the SAME `nvinfer` forward pass, each against its own prompt. For multiple classes on one camera, use SAM3Fixed instead.
+**`SAM3Open/`** — open-vocabulary: the prompt is encoded into a tensor at runtime instead of being baked in (`export.py`, formerly `export_onnx_dynamic.py`, produces a separate `text_encoder.engine` + `vision_decoder.engine`, built once, never re-exported). `ds9_rtsp.py` is a real, working camera pipeline: each camera gets a comma-separated class list (`prompt = car, truck`, up to `K_MAX=5` classes — baked into the engine by `export.py --k-max`, must match `sam3open_text.K_MAX`), and up to `MAX_SOURCES=4` cameras (matching the engine's max profile batch — `sam3open_text.py`) are scored in the SAME `nvinfer` forward pass, each against its own classes. Each class gets its own text embedding (slot k of the camera's row); the ViT runs once per image, the K_MAX slots ride the batch axis through the DETR decoder (decoder cost is paid for all K_MAX slots of every camera, used or not; unused slots have an all-False `text_mask` and score 0).
 
 `export.py` at the repo root is a thin dispatcher over both: `--prompt <classes>` calls `SAM3Fixed/export.py`; no `--prompt` calls `SAM3Open/export.py`.
 
@@ -79,7 +79,7 @@ python3 infer_engine_efficientsam3.py efficientsam3_1008_det_truck bus.jpg --con
 
 SAM3 is decomposed into ONNX-traceable submodules (`_VisionEncoder`/`_VisionEncoderFull`, `_Decoder`/`_DecoderFull`) rather than exporting the HuggingFace model directly, because the stock model hard-fails at any resolution other than 1008 (missing dynamic RoPE/position-embedding resize logic). `_VisionEncoder.__init__` rebuilds each ViT layer's `rotary_emb` for the target `Hp,Wp` and re-tiles the absolute position embedding before tracing — this is what makes `--imgsz` other than 1008 possible at all (must still be a multiple of `patch_size`, square). `SAM3Open/export.py` reuses `_VisionEncoder`/`_Decoder` directly (imported cross-folder, see above) but is only ever exported at `imgsz=1008`.
 
-`Sam3Wrapper` bakes N classes as ONNX constants and loops the DETR decoder once per class, concatenating results — so a SAM3Fixed engine's cost scales with the number of baked classes, not just image size.
+`Sam3Wrapper` bakes N classes as ONNX constants (`text_feat_all`/`text_mask_all`) and folds them into the batch axis: the ViT runs once, its outputs are repeated to `B*N` rows (row `b*N+i` = image b × class i), and the DETR decoder runs once over all rows, then reshapes back to `[B, N*Q, ...]` (class-major, `cls_id = i // Q`). FLOPs of the decoder still scale with N (the DETR encoder fuses text per prompt) but there is no per-class graph unroll, and activation memory scales with `B*N`.
 
 ### Multi-camera union-prompt pattern (SAM3Fixed)
 
@@ -91,12 +91,12 @@ Because `nvinfer`'s `config-file-path` property is live-swappable while the pipe
 
 `vision_decoder.engine` takes `pixel_values`/`text_features`/`text_mask` as inputs (batch dim = camera count, matching `nvstreammux`). `nvinfer` handles `pixel_values` (the image) automatically like any detector; `text_features`/`text_mask` are non-image input layers, injected by `SAM3Open/nvdsparsebbox_sam3.cpp`'s `NvDsInferInitializeInputLayers` — a fixed symbol name `nvinfer` looks up via `dlsym` (a custom name is silently never called; verified empirically). It reads two flat snapshot files written by `SAM3Open/sam3open_text.py`:
 ```
-/dev/shm/sam3open_text_features.bin   MAX_SOURCES x 32 x 256  float32
-/dev/shm/sam3open_text_mask.bin       MAX_SOURCES x 32        uint8   (TRT reports BOOL; DeepStream maps it to UINT8)
+/dev/shm/sam3open_text_features.bin   MAX_SOURCES x K_MAX x 32 x 256  float32
+/dev/shm/sam3open_text_mask.bin       MAX_SOURCES x K_MAX x 32        uint8   (TRT reports BOOL; DeepStream maps it to UINT8)
 ```
-row *b* = camera *b*'s current prompt encoding (from `text_encoder.engine`, run directly via TensorRT in Python — not through `nvinfer`). This function is called once per `nvinfer` context (re)load, not per frame — so a prompt change needs a snapshot rewrite followed by `nvinfer.set({"config-file-path": <SAME path>})`, which reloads the context and re-triggers it (verified: reloading the *same* config path re-reads the snapshot files). No TensorRT engine rebuild is ever needed for a prompt change. `SAM3Open/ds9_rtsp.py`'s watcher thread implements this the same way `SAM3Fixed/ds9_rtsp.py`'s does for the baked engine (see Multi-camera union-prompt pattern above).
+row *b* slot *k* = camera *b*'s k-th class encoding (from `text_encoder.engine`, run directly via TensorRT in Python — not through `nvinfer`). This function is called once per `nvinfer` context (re)load, not per frame — so a prompt change needs a snapshot rewrite followed by `nvinfer.set({"config-file-path": <SAME path>})`, which reloads the context and re-triggers it (verified: reloading the *same* config path re-reads the snapshot files). No TensorRT engine rebuild is ever needed for a prompt change. `SAM3Open/ds9_rtsp.py`'s watcher thread implements this the same way `SAM3Fixed/ds9_rtsp.py`'s does for the baked engine (see Multi-camera union-prompt pattern above).
 
-`SAM3Open/nvdsparsebbox_sam3.cpp`'s output parser reads `detections [200,5]` float32 (`x1 y1 x2 y2 score`, pixel units) — no `cls_id` column, since there's one prompt per camera row; `classId` is always 0, and `SAM3Open/ds9_rtsp.py`'s `PromptLabeler` sets the display label from the camera's own prompt string instead of a fixed `labels.txt`.
+`SAM3Open/nvdsparsebbox_sam3.cpp`'s output parser reads `detections [K_MAX*200,6]` float32 (`x1 y1 x2 y2 score cls_id`, pixel units); `cls_id` is the camera's class slot (NMS only suppresses within the same slot), and `SAM3Open/ds9_rtsp.py`'s `PromptLabeler` maps `(camera, cls_id)` to the display label from the camera's class list instead of a fixed `labels.txt`.
 
 ### The `_get_coords` box-accuracy fix
 
@@ -111,6 +111,10 @@ An earlier version of this fix used an empirically-calibrated additive offset (0
 It builds via `build_mixed_precision_engine.py` (called automatically from `specialize_efficientsam3.py`, not a separate manual step) rather than plain FP16: EfficientViT's `context_module` (ReLU linear-attention, unbounded sums with no softmax normalization) overflows FP16 range and produces NaNs, so those layers are forced back to FP32 while everything else stays FP16.
 
 No DeepStream pipeline script exists for this variant — `infer_engine_efficientsam3.py` is a standalone TensorRT inference script for testing an exported engine against a single image, not a live-camera path.
+
+### SAM3_test/ (investigation artifacts)
+
+Not code: `GETCOORDS_INVESTIGATION.md` plus csv sweeps and before/after jpgs documenting the `_get_coords` box-undershoot investigation above. Read the md before touching that patch.
 
 ### DeepStream pipeline gotchas (measured on this hardware — RTX 50-series, driver 610.x, DS 9.1)
 
