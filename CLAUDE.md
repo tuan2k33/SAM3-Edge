@@ -6,8 +6,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Real-time open-vocabulary detection and instance segmentation on multi-camera RTSP streams using [SAM3](https://github.com/facebookresearch/sam3) and NVIDIA DeepStream 9. Two independent, self-contained architectures for getting a prompt into SAM3 live side by side as top-level folders — `SAM3Fixed/` (classes baked at export time) and `SAM3Open/` (open-vocabulary, prompt supplied at runtime). Each folder holds everything for that architecture: the export script, the custom `nvinfer` plugin, and the DeepStream pipeline script(s) + configs. Generated engines from both go into a shared `weight/` folder at the repo root.
 
-A third top-level folder, `ESAM3_test/`, is an experimental, export-only variant using [EfficientSAM3](https://github.com/SimonZeng7108/efficientsam3)'s EfficientViT backbone instead of SAM3's ViT — offline export/inference testing only, no DeepStream pipeline script of its own (see below).
-
 ## Setup
 
 No pinned `requirements.txt` — always install latest torch/transformers/tensorrt matching your CUDA/TensorRT install:
@@ -58,18 +56,11 @@ Per-stage throughput (decode fps, text encoder, vision decoder, baked engine), f
 python3 bench_stages.py --imgsz 420 --batch 1 2 4
 ```
 
-Export + test-infer an EfficientSAM3 engine (offline testing only, no live pipeline):
-```bash
-cd ESAM3_test
-python3 specialize_efficientsam3.py --classes truck --mode det --device cuda   # -> efficientsam3_1008_det_truck/
-python3 infer_engine_efficientsam3.py efficientsam3_1008_det_truck bus.jpg --conf 0.2
-```
-
 ## Architecture
 
 ### Two self-contained folders, one shared weight/ folder
 
-`SAM3Fixed/` and `SAM3Open/` each hold their own export script, custom `nvinfer` plugin (`nvdsparsebbox_sam3.cpp`/`libnvdsinfer_sam3.so` — same filenames in both folders, no collision since they're in separate directories), and DeepStream pipeline script(s) + `config.txt`. Nothing about one architecture reaches into the other except: (a) `SAM3Open/export.py` imports `_VisionEncoder`/`_Decoder` from `SAM3Fixed/export.py` (both architectures trace the same ONNX submodules), and (b) both write their generated engines into the shared `weight/` folder at the repo root (`weight/sam3_{imgsz}_{mode}_{classes}/` for Fixed, `weight/sam3_{imgsz}_open/` for Open) rather than next to themselves.
+`SAM3Fixed/` and `SAM3Open/` each hold their own export script, custom `nvinfer` plugin (`nvdsparsebbox_sam3.cpp`/`libnvdsinfer_sam3.so` — same filenames in both folders, no collision since they're in separate directories), and DeepStream pipeline script(s) + `config.txt`. Nothing about one architecture reaches into the other: `SAM3Open/export.py` carries its own copy of `_VisionEncoder`/`_Decoder` and the imgsz fixes (keep in sync with `SAM3Fixed/export.py`). Both write their generated engines into the shared `weight/` folder at the repo root (`weight/sam3_{imgsz}_{mode}_{classes}/` for Fixed, `weight/sam3_{imgsz}_open/` for Open) rather than next to themselves.
 
 ### Two ways to give SAM3 a prompt
 
@@ -81,7 +72,7 @@ python3 infer_engine_efficientsam3.py efficientsam3_1008_det_truck bus.jpg --con
 
 ### `export.py`'s export pattern (SAM3Fixed)
 
-SAM3 is decomposed into ONNX-traceable submodules (`_VisionEncoder`/`_VisionEncoderFull`, `_Decoder`/`_DecoderFull`) rather than exporting the HuggingFace model directly, because the stock model hard-fails at any resolution other than 1008 (missing dynamic RoPE/position-embedding resize logic). `_VisionEncoder.__init__` rebuilds each ViT layer's `rotary_emb` for the target `Hp,Wp` and re-tiles the absolute position embedding before tracing — this is what makes `--imgsz` other than 1008 possible at all (must still be a multiple of `patch_size`, square). `SAM3Open/export.py` reuses `_VisionEncoder`/`_Decoder` directly (imported cross-folder, see above) and takes `--imgsz` too (default 1008; 420 verified end-to-end on 2 cameras). `SAM3Open/config.txt` `[model] imgsz` must match the engines' export size.
+SAM3 is decomposed into ONNX-traceable submodules (`_VisionEncoder`/`_VisionEncoderFull`, `_Decoder`/`_DecoderFull`) rather than exporting the HuggingFace model directly, because the stock model hard-fails at any resolution other than 1008 (missing dynamic RoPE/position-embedding resize logic). `_VisionEncoder.__init__` rebuilds each ViT layer's `rotary_emb` for the target `Hp,Wp` and re-tiles the absolute position embedding before tracing — this is what makes `--imgsz` other than 1008 possible at all (must still be a multiple of `patch_size`, square). `SAM3Open/export.py` has the same modules (a copy) and takes `--imgsz` too (default 1008; 420 verified end-to-end on 2 cameras). `SAM3Open/config.txt` `[model] imgsz` must match the engines' export size.
 
 `Sam3Wrapper` bakes N classes as ONNX constants (`text_feat_all`/`text_mask_all`) and folds them into the batch axis: the ViT runs once, its outputs are repeated to `B*N` rows (row `b*N+i` = image b × class i), and the DETR decoder runs once over all rows, then reshapes back to `[B, N*Q, ...]` (class-major, `cls_id = i // Q`). FLOPs of the decoder still scale with N (the DETR encoder fuses text per prompt) but there is no per-class graph unroll, and activation memory scales with `B*N`.
 
@@ -112,19 +103,11 @@ The checkpoint was only trained at imgsz 1008 (H = 72 cells of 14 px). At other 
 - `Sam3DetrDecoder._get_coords` -> `arange(0,H)/(H-1) * 71/72` (`_TRAIN_GRID = 72`): fixes the box *centre*; the original grid `arange/H` is only a convention.
 - `Sam3SinePositionEmbedding.encode_boxes` multiplies the box by `box_scale = (H/72)^1.0` (set per forward in `_Decoder._decode` from the feature map size): fixes the box *size* (width -10.4% -> -1.8% at 420 on held-out images, TensorRT FP16 engine). Root cause is in the decoder's box position encoding, not the grid; the exponent is empirical (a=1 = "72-grid frame"), no derivation.
 
-At H = 72 both are the identity. Rejected: letting the grid end at 1.0, content resolution, window padding, encoder RoPE/abs-pos. Full evidence: `SAM3_test/BOX_SHRINK_INVESTIGATION.md` (supersedes `GETCOORDS_INVESTIGATION.md`). `ESAM3_test` still carries the older cap `0.987654321`, not re-verified.
+At H = 72 both are the identity. Rejected: letting the grid end at 1.0, content resolution, window padding, encoder RoPE/abs-pos. Full evidence: `test/BOX_SHRINK_INVESTIGATION.md`.
 
-### ESAM3_test/ (experimental, export-only)
+### test/ (investigation artifacts)
 
-`specialize_efficientsam3.py` follows the same conventions as `SAM3Fixed/export.py` (baked classes, `--mode det/seg`, output dir `efficientsam3_{imgsz}_{mode}_{classes}/`) but traces the EfficientSAM3 checkpoint (EfficientViT-b1 vision encoder + a 4-layer MobileCLIP-S0-variant text encoder — confirmed by inspecting the checkpoint's actual keys; upstream's own README/table says "MobileCLIP-S1", which is wrong, that maps to a 12-layer variant that doesn't match). `imgsz` is hard-locked at 1008 (unlike `SAM3Fixed/export.py`): lowering it doesn't degrade gradually, it causes outright missed/split detections, because EfficientViT's feature map is coarser than SAM3's ViT at the same input size — confirmed not an export bug by cross-checking ONNX against PyTorch at both resolutions (sub-pixel discrepancy).
-
-It builds via `build_mixed_precision_engine.py` (called automatically from `specialize_efficientsam3.py`, not a separate manual step) rather than plain FP16: EfficientViT's `context_module` (ReLU linear-attention, unbounded sums with no softmax normalization) overflows FP16 range and produces NaNs, so those layers are forced back to FP32 while everything else stays FP16.
-
-No DeepStream pipeline script exists for this variant — `infer_engine_efficientsam3.py` is a standalone TensorRT inference script for testing an exported engine against a single image, not a live-camera path.
-
-### SAM3_test/ (investigation artifacts)
-
-`BOX_SHRINK_INVESTIGATION.md` (final fix, ground-truth evidence; scripts `collect_box_pairs.py`, `analyze_box_pairs.py`, `eval_engine_person.py` for engines; raw pairs in `results_pairs/`) and `GETCOORDS_INVESTIGATION.md` (earlier), plus csv sweeps and before/after jpgs documenting the `_get_coords` box-undershoot investigation above, `bus.jpg` (Ultralytics sample, 810×1080) and two re-check scripts (`check_cap_multiimage.py`, `check_class_independence.py`; run from the repo root with `HF_TOKEN`). Read the md before touching that patch.
+`BOX_SHRINK_INVESTIGATION.md` (final fix, ground-truth evidence; scripts `collect_box_pairs.py`, `analyze_box_pairs.py`, `eval_engine_person.py` for engines; raw pairs in `results_pairs/`) plus `compare_bus.py` / `infer_engine_bus.py` (before/after/reference images on `bus.jpg`, the Ultralytics sample, 810×1080; run from the repo root with `HF_TOKEN`). Read the md before touching that patch.
 
 ### DeepStream pipeline gotchas (measured on this hardware — RTX 50-series, driver 610.x, DS 9.1)
 

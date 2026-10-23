@@ -73,7 +73,7 @@ Both the ONNX graphs and the TRT engines have `imgsz` (H and W) hardcoded at
 export time (default 1008x1008; `export.py --imgsz 420` gives a much lighter
 model, output in `weight/sam3_420_open/`) — only `batch` is a dynamic axis.
 `ds9_rtsp.py` reads the matching size from `config.txt` `[model] imgsz`. This isn't just a build-time
-engine-profile choice: `_VisionEncoder.__init__` (imported from
+engine-profile choice: `_VisionEncoder.__init__` (copied from
 `SAM3Fixed/export.py`) rebuilds each ViT layer's `rotary_emb` and re-tiles the
 absolute position embedding for a specific `Hp,Wp` grid *at trace time* (not
 inside `forward()`), so a different resolution needs a full re-export

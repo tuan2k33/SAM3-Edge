@@ -4,7 +4,7 @@ Errors are prediction - GT. In PATCHES: coordinate error (normalised to the imag
 is the resolution of the image content (the network input for plain sizes, e.g. 420; 420 for "420in1008").
 Only pairs with IoU >= --min-iou are used for the error statistics (default 0.5, to keep gross mismatches out).
 
-    python SAM3_test/analyze_box_pairs.py [--dir SAM3_test/results_pairs] [--min-iou 0.5]
+    python test/analyze_box_pairs.py [--dir test/results_pairs] [--min-iou 0.5]
 """
 import argparse, glob, json, os
 import numpy as np

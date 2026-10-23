@@ -8,14 +8,33 @@ Real-time open-vocabulary detection and instance segmentation on multi-camera RT
 
 ## Tested on
 
-- NVIDIA GPU 50x series
-- DeepStream 9.1 + pyservicemaker, CUDA 13.2, TensorRT 10.16
+- NVIDIA GPU
+- DeepStream 9 + pyservicemaker, CUDA 13, TensorRT 10
 
 ---
 
 ## Updates
 
 <details open>
+<summary><strong>2026-10-23</strong></summary>
+
+- **Fix box shrink at imgsz != 1008.** The checkpoint was trained only at 1008 (72x72 cells); at other sizes boxes shrank toward the top-left
+  (width -10% at 420). Both `SAM3Fixed` and `SAM3Open` now patch the decoder (box position encoding scaled by `imgsz/1008`, grid ends at 71/72),
+  baked into every exported engine. Width error at 420: -10.4% -> -1.8% (held-out COCO images, TensorRT FP16). 1008 is unchanged.
+  Evidence: `test/BOX_SHRINK_INVESTIGATION.md`. 
+
+</details>
+
+<details>
+<summary><strong>2026-10-22</strong></summary>
+
+- **SAM3Open per-camera class lists** (K class slots, `--k-max`, default 5); SAM3Fixed folds classes into the batch axis.
+- Configurable `imgsz` in the pipelines, WSL2 mux fix, file-source timestamps, stable labels.
+- Renamed to SAM3-Edge.
+
+</details>
+
+<details>
 <summary><strong>2026-08-13</strong></summary>
 
 - **Fix small-imgsz model degrading (>280 should work).** 
@@ -104,9 +123,8 @@ Setup, `config.txt` reference, and manual export/recompile steps for each are in
 architecture: each has its own export script, custom `nvinfer` plugin, and
 DeepStream pipeline script(s) + `config.txt`. Both write their generated
 engines into a shared `weight/` folder at the repo root instead of next to
-themselves. The only cross-folder dependency is `SAM3Open/export.py`
-importing `_VisionEncoder`/`_Decoder` from `SAM3Fixed/export.py` (both
-architectures trace the same ONNX-traceable submodules).
+themselves. `SAM3Open/export.py` carries its own copy of the encoder/decoder
+modules and the imgsz fixes (keep it in sync with `SAM3Fixed/export.py`).
 
 There are two ways to give SAM3 a prompt:
 
@@ -202,7 +220,7 @@ SAM3-Edge/
 │   ├── config.txt               # sources + per-camera free-text prompts
 │   ├── config_tracker_NvSORT_i5.yml
 │   └── output/
-└── ESAM3_test/                   # EfficientSAM3 (EfficientViT backbone) variant, testing only
+└── test/                        # box-accuracy investigation: scripts, raw pairs, evidence
 ```
 
 ---
@@ -217,4 +235,3 @@ This is a personal project. It is not affiliated with, endorsed by, or connected
 
 Derivative work of SAM3 by Meta. Distributed under the [SAM License](LICENSE).
 
-`ESAM3_test/` is a derivative of [EfficientSAM3](https://github.com/SimonZeng7108/efficientsam3) (Apache 2.0), by Simon Zeng.

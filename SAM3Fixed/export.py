@@ -36,34 +36,14 @@ from transformers.models.sam3.modeling_sam3 import Sam3DetrDecoder, Sam3SinePosi
 
 
 # ── Fixes for running at imgsz != 1008 ─────────────────────────────────────
-#
-# The checkpoint was trained at one size only (imgsz 1008 = 72x72 cells of 14 px). At any other
-# size the boxes come out smaller (imgsz < 1008) or slightly larger (imgsz > 1008) than the
-# ground truth, by an amount that varies smoothly with H = imgsz/14: the model's own decoder is
-# where that happens (SAM3_test/BOX_SHRINK_INVESTIGATION.md has the full evidence). Two patches,
-# both no-ops at H = 72 and both applied when this module is imported (before any model is built):
-#
-# 1) Grid (centre of the boxes). Sam3DetrDecoder._get_coords builds arange(0,H)/H, which ends at
-#    (H-1)/H; the box relative-position bias (every decoder layer) was trained on a grid ending
-#    at 71/72. We stretch it to always end there: arange/(H-1) * 71/72. This re-centres the boxes
-#    (centre error ~0.2 -> ~0.05 patch) but barely changes their size.
-#
-# 2) Query box scale (size of the boxes). The decoder turns each query's box (cx, cy, w, h) into a
-#    sine embedding (Sam3SinePositionEmbedding.encode_boxes -> ref_point_head -> query_pos).
-#    Multiplying the box by (H/72)**a before that encoding grows the predicted boxes about their
-#    centre and flattens the width/height error across imgsz (width slope per 10 cells of H:
-#    +2.0% -> ~0, mean |error| 5.8% -> 1.9% over imgsz 336-1260). a = 1 means "express the box in
-#    the 72-grid frame, where one cell has the trained size"; there is no theory behind a > 1 and
-#    the gain is small, so a = 1.
-#
-# Sam3Wrapper.forward() still clamps boxes to [0,1] as a safety net.
+# Applied at import, no-ops at H = 72. Evidence: test/BOX_SHRINK_INVESTIGATION.md
+# 1) decoder grid ends at the trained 71/72 for any H; 2) query box scaled by (H/72)**a before its sine encoding.
 _TRAIN_GRID = 72                 # H at the checkpoint's training size (imgsz 1008 / patch 14)
 _QUERY_BOX_SCALE_EXP = 1.0       # a in (H/_TRAIN_GRID)**a
 _APPLY_QUERY_BOX_SCALE = True    # experiments switch it off to start from the unpatched decoder
 
 
 def _get_coords_denom_fix(self, height, width, dtype, device):
-    # computed in fp32, cast once: same formula, no fp16 rounding noise in the grid
     coords_h = (torch.arange(0, height, device=device, dtype=torch.float32) / (height - 1) * (_TRAIN_GRID - 1) / _TRAIN_GRID).to(dtype)
     coords_w = (torch.arange(0, width, device=device, dtype=torch.float32) / (width - 1) * (_TRAIN_GRID - 1) / _TRAIN_GRID).to(dtype)
     return coords_h, coords_w
@@ -71,8 +51,7 @@ def _get_coords_denom_fix(self, height, width, dtype, device):
 
 Sam3DetrDecoder._get_coords = _get_coords_denom_fix
 
-# Always wrap the ORIGINAL encode_boxes (kept on the class), so importing both SAM3Fixed/export.py
-# and SAM3Open/export.py in one process does not apply the scale twice.
+# wrap the original so importing both export modules does not apply the scale twice
 if not hasattr(Sam3SinePositionEmbedding, "_orig_encode_boxes"):
     Sam3SinePositionEmbedding._orig_encode_boxes = Sam3SinePositionEmbedding.encode_boxes
 
@@ -316,9 +295,7 @@ class Sam3Wrapper(nn.Module):
 
         N = self.num_classes
 
-        # Classes ride the batch axis: row b*N+i = image b x class i, so the
-        # DETR decoder runs once instead of once per class. The ViT backbone
-        # already ran once; only its outputs are repeated.
+        # classes ride the batch axis: row b*N+i = image b x class i
         fpn2    = fpn2.repeat_interleave(N, dim=0)
         fpn_pos = fpn_pos.repeat_interleave(N, dim=0)
         text_feat = self.text_feat_all.repeat(B, 1, 1)
@@ -339,18 +316,11 @@ class Sam3Wrapper(nn.Module):
         else:
             pred_boxes, pred_logits, presence = self.decoder(fpn2, fpn_pos, text_feat, text_mask)
 
-        # The _get_coords denom fix (module top) can push an
-        # already-near-edge box slightly outside the frame (e.g.
-        # x2=1.01) -- clip back into [0,1] before scaling to pixels.
+        # the grid fix can push edge boxes slightly past the frame
         pred_boxes = pred_boxes.clamp(0.0, 1.0)
 
         boxes_px = pred_boxes * self.scale
-        # SAM3's final detection score is the per-query score gated by a
-        # scene-level presence token (HF transformers documents:
-        #   final_scores = pred_logits.sigmoid() * presence_logits.sigmoid()).
-        # Without the presence gate, concepts that are ABSENT from the scene
-        # (e.g. "human face" on a vehicle windshield) are not suppressed and
-        # leak as high-confidence false positives.
+        # final score = query score gated by the scene-level presence token; without it absent concepts leak as false positives
         scores = (pred_logits.sigmoid() * presence.sigmoid()).unsqueeze(-1)
         Q = pred_boxes.shape[1]
         cls_id = (

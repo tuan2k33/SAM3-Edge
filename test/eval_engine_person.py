@@ -4,7 +4,7 @@ Runs the engine itself (TensorRT, FP16) on every coco128 image that has a 'perso
 image, and reports the same quantities as analyze_box_pairs.py (mean width/height error in %, centre error in
 patches, recall@0.5, mean IoU). Use it to check that the fixes in SAM3Fixed/export.py really end up in the engine.
 
-    python SAM3_test/eval_engine_person.py weight/sam3_420_det_person/sam3_new.engine 420 [--set first|held|all]
+    python test/eval_engine_person.py weight/sam3_420_det_person/sam3_new.engine 420 [--set first|held|all]
 """
 import argparse, glob, os
 import cv2, numpy as np, tensorrt as trt, torch

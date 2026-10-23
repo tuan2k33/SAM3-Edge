@@ -1,32 +1,22 @@
 #!/usr/bin/env python3
 """
-Dynamic-prompt ONNX export for the ORIGINAL SAM3 (facebook/sam3, 840M params),
-mirroring efficientsam3's export_onnx_open_vocab_paired.py: prompts are
-encoded and passed in at RUNTIME (not baked as buffers like Sam3Wrapper in
-SAM3Fixed/export.py), so no re-export is needed to change classes.
+Dynamic-prompt ONNX export for SAM3 (facebook/sam3): prompts are encoded and passed in at RUNTIME
+(not baked as in SAM3Fixed/export.py), so no re-export is needed to change classes.
 
-Two graphs:
-  1. text_encoder.onnx  : input_ids [B,32] + attention_mask [B,32]
-                              -> text_features [B,32,256], text_mask [B,32]
-  2. vision_decoder.onnx: pixel_values [B,3,H,W] + text_features [B,K,32,256]
-                              + text_mask [B,K,32]  -> detections [B,K*200,6]
-                              (K = --k-max class slots per image; ViT runs once
-                              per image, the K slots ride the batch axis through
-                              the DETR decoder. Unused slots: text_mask all False
-                              -> score forced to 0. cls_id = slot index.)
-
-Unlike efficientsam3, SAM3's detr_encoder/detr_decoder consume text_features
-per BATCH ROW directly (no FindStage.text_ids indexing) -- so image[i] slot k is
-automatically paired with text_features[i,k].
+  1. text_encoder.onnx  : input_ids [B,32] + attention_mask [B,32] -> text_features [B,32,256], text_mask [B,32]
+  2. vision_decoder.onnx: pixel_values [B,3,H,W] + text_features [B,K,32,256] + text_mask [B,K,32]
+                              -> detections [B,K*200,6]   (x1 y1 x2 y2 score cls_id = slot index)
+     K = --k-max class slots per image: the ViT runs once per image, the K slots ride the batch axis
+     through the DETR decoder; unused slots (text_mask all False) score 0. The decoder consumes
+     text_features per batch row, so image i slot k pairs with text_features[i,k].
 
 Usage:
     python3 export.py --imgsz 1008   # -> ../weight/sam3_1008_open/{text,vision}.{onnx,engine}
-    python3 export.py --k-max 4      # engine with 4 class slots per camera (default 5)
+    python3 export.py --k-max 4      # 4 class slots per camera (default 5)
 
-The vision engine is built with K fixed (min=opt=max=--k-max): nvinfer always
-allocates the K of the profile's opt shape, so a dynamic K axis does not make it
-follow the number of classes actually in use. Decoder cost is paid for all K
-slots (measured ~+20 ms per slot on RTX 3050 Ti, ViT/encoder ~260 ms per image).
+The vision engine is built with K fixed (min=opt=max=--k-max): nvinfer allocates the K of the opt
+shape, so a dynamic K axis would not follow the classes in use. Decoder cost is paid for all K
+slots (~+20 ms per slot on RTX 3050 Ti; ViT/encoder ~260 ms per image).
 """
 import os
 import shlex
@@ -50,34 +40,14 @@ from transformers.models.sam3.modeling_sam3 import Sam3DetrDecoder, Sam3SinePosi
 # ── Self-contained: the fixes and the two modules below are a copy of SAM3Fixed/export.py (keep in sync) ──
 
 # ── Fixes for running at imgsz != 1008 ─────────────────────────────────────
-#
-# The checkpoint was trained at one size only (imgsz 1008 = 72x72 cells of 14 px). At any other
-# size the boxes come out smaller (imgsz < 1008) or slightly larger (imgsz > 1008) than the
-# ground truth, by an amount that varies smoothly with H = imgsz/14: the model's own decoder is
-# where that happens (SAM3_test/BOX_SHRINK_INVESTIGATION.md has the full evidence). Two patches,
-# both no-ops at H = 72 and both applied when this module is imported (before any model is built):
-#
-# 1) Grid (centre of the boxes). Sam3DetrDecoder._get_coords builds arange(0,H)/H, which ends at
-#    (H-1)/H; the box relative-position bias (every decoder layer) was trained on a grid ending
-#    at 71/72. We stretch it to always end there: arange/(H-1) * 71/72. This re-centres the boxes
-#    (centre error ~0.2 -> ~0.05 patch) but barely changes their size.
-#
-# 2) Query box scale (size of the boxes). The decoder turns each query's box (cx, cy, w, h) into a
-#    sine embedding (Sam3SinePositionEmbedding.encode_boxes -> ref_point_head -> query_pos).
-#    Multiplying the box by (H/72)**a before that encoding grows the predicted boxes about their
-#    centre and flattens the width/height error across imgsz (width slope per 10 cells of H:
-#    +2.0% -> ~0, mean |error| 5.8% -> 1.9% over imgsz 336-1260). a = 1 means "express the box in
-#    the 72-grid frame, where one cell has the trained size"; there is no theory behind a > 1 and
-#    the gain is small, so a = 1.
-#
-# Sam3Wrapper.forward() still clamps boxes to [0,1] as a safety net.
+# Applied at import, no-ops at H = 72. Evidence: test/BOX_SHRINK_INVESTIGATION.md
+# 1) decoder grid ends at the trained 71/72 for any H; 2) query box scaled by (H/72)**a before its sine encoding.
 _TRAIN_GRID = 72                 # H at the checkpoint's training size (imgsz 1008 / patch 14)
 _QUERY_BOX_SCALE_EXP = 1.0       # a in (H/_TRAIN_GRID)**a
 _APPLY_QUERY_BOX_SCALE = True    # experiments switch it off to start from the unpatched decoder
 
 
 def _get_coords_denom_fix(self, height, width, dtype, device):
-    # computed in fp32, cast once: same formula, no fp16 rounding noise in the grid
     coords_h = (torch.arange(0, height, device=device, dtype=torch.float32) / (height - 1) * (_TRAIN_GRID - 1) / _TRAIN_GRID).to(dtype)
     coords_w = (torch.arange(0, width, device=device, dtype=torch.float32) / (width - 1) * (_TRAIN_GRID - 1) / _TRAIN_GRID).to(dtype)
     return coords_h, coords_w
@@ -85,8 +55,7 @@ def _get_coords_denom_fix(self, height, width, dtype, device):
 
 Sam3DetrDecoder._get_coords = _get_coords_denom_fix
 
-# Always wrap the ORIGINAL encode_boxes (kept on the class), so importing both SAM3Fixed/export.py
-# and SAM3Open/export.py in one process does not apply the scale twice.
+# wrap the original so importing both export modules does not apply the scale twice
 if not hasattr(Sam3SinePositionEmbedding, "_orig_encode_boxes"):
     Sam3SinePositionEmbedding._orig_encode_boxes = Sam3SinePositionEmbedding.encode_boxes
 

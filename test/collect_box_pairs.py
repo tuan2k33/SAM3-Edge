@@ -26,8 +26,8 @@ clipped to the image, a true fp16 model. A GT box is paired with the best-IoU un
               feature map is cropped to the content (c/14 cells) and the decoder runs with the geometry of that
               smaller grid (grid, sine position, RPB at H=c/14), boxes normalised to the content
 
-Run from the repo root:  HF_TOKEN=... python SAM3_test/collect_box_pairs.py --sizes 420 --variants orig,71/72,cell
-Needs coco128 in SAM3_test/data/coco128 (git-ignored); see check_cap_coco128.py for the download line.
+Run from the repo root:  HF_TOKEN=... python test/collect_box_pairs.py --sizes 420 --variants orig,71/72,cell
+Needs coco128 in test/data/coco128 (git-ignored): the ultralytics coco128 dataset (images/ + labels/).
 """
 import argparse, collections, glob, importlib.util, json, math, os, sys
 import cv2, numpy as np, torch
