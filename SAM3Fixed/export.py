@@ -32,44 +32,60 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from transformers.models.sam3 import Sam3Model, Sam3Processor
-from transformers.models.sam3.modeling_sam3 import Sam3DetrDecoder, Sam3ViTRotaryEmbedding
+from transformers.models.sam3.modeling_sam3 import Sam3DetrDecoder, Sam3SinePositionEmbedding, Sam3ViTRotaryEmbedding
 
 
-# ── Fix for the _get_coords bug ────────────────────────────────────────────
+# ── Fixes for running at imgsz != 1008 ─────────────────────────────────────
 #
-# Sam3DetrDecoder._get_coords (original, in transformers) generates a
-# coordinate grid arange(0,height)/height -> range [0, (height-1)/height],
-# NEVER reaching 1.0. This grid feeds _get_rpb_matrix (relative position bias
-# for the decoder's cross-attention, used at EVERY layer) -> the decoder
-# learns to regress boxes that undershoot toward the far corner (x2,y2), by a
-# fraction proportional to 1/Hp -- more pronounced the smaller imgsz gets.
+# The checkpoint was trained at one size only (imgsz 1008 = 72x72 cells of 14 px). At any other
+# size the boxes come out smaller (imgsz < 1008) or slightly larger (imgsz > 1008) than the
+# ground truth, by an amount that varies smoothly with H = imgsz/14: the model's own decoder is
+# where that happens (SAM3_test/BOX_SHRINK_INVESTIGATION.md has the full evidence). Two patches,
+# both no-ops at H = 72 and both applied when this module is imported (before any model is built):
 #
-# Fix: divide by (height-1)/(width-1) instead of height/width, so the grid
-# would reach 1.0 -- capped below 1.0 instead (see below), not a full 1.0.
+# 1) Grid (centre of the boxes). Sam3DetrDecoder._get_coords builds arange(0,H)/H, which ends at
+#    (H-1)/H; the box relative-position bias (every decoder layer) was trained on a grid ending
+#    at 71/72. We stretch it to always end there: arange/(H-1) * 71/72. This re-centres the boxes
+#    (centre error ~0.2 -> ~0.05 patch) but barely changes their size.
 #
-# Why capped and not a full 1.0: the checkpoint was never retrained against
-# a corrected grid, so pushing the max all the way to 1.0 is a bigger
-# train/inference distribution shift than the network was calibrated for --
-# a full 1.0 cap measured worst on every imgsz tested (verified against a
-# groundtruth proxy across a 71-point sweep, imgsz 420-1400 step 14; see
-# SAM3-Edge/SAM3_test/GETCOORDS_INVESTIGATION.md for the full
-# writeup, sweep data, and everything else that was tried and rejected:
-# cap=0.98, patch-center convention, /(H-0.9), post-hoc pixel shifts).
-# cap=0.987654321 measured the best mean box-coordinate error against that
-# proxy, beating both a full 1.0 cap and cap=0.99 on 3 of 4 spot-check
-# sizes. _clamp_boxes() below (Sam3Wrapper.forward()) is kept as a final
-# safety net regardless, since even this cap can push an already-near-edge
-# box slightly past the frame.
-_COORDS_CAP = 0.987654321
+# 2) Query box scale (size of the boxes). The decoder turns each query's box (cx, cy, w, h) into a
+#    sine embedding (Sam3SinePositionEmbedding.encode_boxes -> ref_point_head -> query_pos).
+#    Multiplying the box by (H/72)**a before that encoding grows the predicted boxes about their
+#    centre and flattens the width/height error across imgsz (width slope per 10 cells of H:
+#    +2.0% -> ~0, mean |error| 5.8% -> 1.9% over imgsz 336-1260). a = 1 means "express the box in
+#    the 72-grid frame, where one cell has the trained size"; there is no theory behind a > 1 and
+#    the gain is small, so a = 1.
+#
+# Sam3Wrapper.forward() still clamps boxes to [0,1] as a safety net.
+_TRAIN_GRID = 72                 # H at the checkpoint's training size (imgsz 1008 / patch 14)
+_QUERY_BOX_SCALE_EXP = 1.0       # a in (H/_TRAIN_GRID)**a
+_APPLY_QUERY_BOX_SCALE = True    # experiments switch it off to start from the unpatched decoder
 
 
 def _get_coords_denom_fix(self, height, width, dtype, device):
-    coords_h = torch.arange(0, height, device=device, dtype=dtype) / (height - 1) * _COORDS_CAP
-    coords_w = torch.arange(0, width, device=device, dtype=dtype) / (width - 1) * _COORDS_CAP
+    # computed in fp32, cast once: same formula, no fp16 rounding noise in the grid
+    coords_h = (torch.arange(0, height, device=device, dtype=torch.float32) / (height - 1) * (_TRAIN_GRID - 1) / _TRAIN_GRID).to(dtype)
+    coords_w = (torch.arange(0, width, device=device, dtype=torch.float32) / (width - 1) * (_TRAIN_GRID - 1) / _TRAIN_GRID).to(dtype)
     return coords_h, coords_w
 
 
 Sam3DetrDecoder._get_coords = _get_coords_denom_fix
+
+# Always wrap the ORIGINAL encode_boxes (kept on the class), so importing both SAM3Fixed/export.py
+# and SAM3Open/export.py in one process does not apply the scale twice.
+if not hasattr(Sam3SinePositionEmbedding, "_orig_encode_boxes"):
+    Sam3SinePositionEmbedding._orig_encode_boxes = Sam3SinePositionEmbedding.encode_boxes
+
+
+def _encode_boxes_scaled(self, boxes):
+    return Sam3SinePositionEmbedding._orig_encode_boxes(self, boxes * getattr(self, "box_scale", 1.0))
+
+
+Sam3SinePositionEmbedding.encode_boxes = _encode_boxes_scaled
+
+
+def _query_box_scale(H):
+    return (H / _TRAIN_GRID) ** _QUERY_BOX_SCALE_EXP
 
 
 # ── Sinusoidal pos enc ────────────────────────────────────────────────────────
@@ -193,6 +209,8 @@ class _Decoder(nn.Module):
         return torch.stack([cx - w/2, cy - h/2, cx + w/2, cy + h/2], dim=-1)
 
     def _decode(self, fpn_feat_2, fpn_pos_2, text_features, text_mask):
+        if _APPLY_QUERY_BOX_SCALE:
+            self.detr_decoder.position_encoding.box_scale = _query_box_scale(int(fpn_feat_2.shape[-1]))
         enc = self.detr_encoder(
             vision_features   = [fpn_feat_2],
             text_features     = text_features,

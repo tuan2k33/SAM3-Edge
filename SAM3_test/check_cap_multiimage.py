@@ -20,7 +20,11 @@ def orig(self, height, width, dtype, device):          # the original (buggy) gr
             torch.arange(0, width, device=device, dtype=dtype) / width)
 def set_cap(c):
     if c == "orig": Sam3DetrDecoder._get_coords = orig
-    else: E._COORDS_CAP = c; Sam3DetrDecoder._get_coords = E._get_coords_denom_fix
+    else:
+        def capped(self, h, w, dtype, device):
+            return (torch.arange(0, h, device=device, dtype=dtype) / (h - 1) * c,
+                    torch.arange(0, w, device=device, dtype=dtype) / (w - 1) * c)
+        Sam3DetrDecoder._get_coords = capped
 
 CAPS = [("orig", "orig"), ("0.98", 0.98), ("71/72", 71/72), ("0.987654321", 0.987654321), ("0.99", 0.99), ("1.0", 1.0)]
 SIZES = [420, 504, 700, 1008]

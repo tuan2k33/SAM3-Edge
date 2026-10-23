@@ -18,6 +18,10 @@ pip install torch torchvision numpy opencv-python pillow transformers einops ftf
 
 Also requires (not pip-installable): DeepStream 9 (`pyservicemaker`), TensorRT 10.x (`trtexec`, `libnvinfer`), CUDA 13.2, `ffmpeg`. All `gpu-id` properties in DeepStream configs must stay `0`; select the physical GPU via `CUDA_VISIBLE_DEVICES=N` instead.
 
+## Precision: FP16 only
+
+Always run and test in FP16 — TensorRT engines (`--fp16`, `network-mode=1`) and PyTorch tests/benchmarks alike (`model.half()`, pixel scaling kept in fp32). Never use FP32, and never `torch.autocast` over FP32 weights: FP32 is only marginally more accurate and much slower, and on the 4 GB dev GPU autocast keeps both weight copies and spills out of VRAM (8 s/forward vs 0.2 s for a real fp16 model). Do not spend time on FP32 comparisons.
+
 ## Common commands
 
 Export an engine (dispatches to the right architecture based on `--prompt`):
@@ -102,13 +106,13 @@ row *b* slot *k* = camera *b*'s k-th class encoding (from `text_encoder.engine`,
 
 `SAM3Open/nvdsparsebbox_sam3.cpp`'s output parser reads `detections [K_MAX*200,6]` float32 (`x1 y1 x2 y2 score cls_id`, pixel units); `cls_id` is the camera's class slot (NMS only suppresses within the same slot), and `SAM3Open/ds9_rtsp.py`'s `PromptLabeler` maps `(camera, cls_id)` to the display label from the camera's class list instead of a fixed `labels.txt`.
 
-### The `_get_coords` box-accuracy fix
+### The imgsz != 1008 box-accuracy fix
 
-`Sam3DetrDecoder._get_coords` (upstream `transformers`) generates a coordinate grid `arange(0,height)/height` that never reaches 1.0 (max value is `(height-1)/height`), which biases the decoder's cross-attention (used for box refinement at every decoder layer) to undershoot boxes toward the far corner (x2,y2) — worse at smaller `imgsz`, negligible at the native 1008. `SAM3Fixed/export.py` monkeypatches `Sam3DetrDecoder._get_coords` at **module import time** (before any model is constructed) to `arange(0,H)/(H-1) * _COORDS_CAP` with `_COORDS_CAP = 0.987654321` — no flag, no opt-in, baked into every exported engine automatically (`ESAM3_test` carries the same value).
+The checkpoint was only trained at imgsz 1008 (H = 72 cells of 14 px). At other `imgsz` the boxes shrink toward the top-left corner (width ~ -10% at 420), smoothly in H. Both `SAM3Fixed/export.py` and `SAM3Open/export.py` (self-contained, keep the two blocks in sync) apply, at **module import time** and baked into every exported engine (no flag):
+- `Sam3DetrDecoder._get_coords` -> `arange(0,H)/(H-1) * 71/72` (`_TRAIN_GRID = 72`): fixes the box *centre*; the original grid `arange/H` is only a convention.
+- `Sam3SinePositionEmbedding.encode_boxes` multiplies the box by `box_scale = (H/72)^1.0` (set per forward in `_Decoder._decode` from the feature map size): fixes the box *size* (width -10.4% -> -1.8% at 420 on held-out images, TensorRT FP16 engine). Root cause is in the decoder's box position encoding, not the grid; the exponent is empirical (a=1 = "72-grid frame"), no derivation.
 
-The grid is deliberately **capped below 1.0**, not made to reach it: the checkpoint was only trained at imgsz 1008, where the grid's max is 71/72 = 0.9861, and a full 1.0 is one patch past what the frozen `box_rpb_embed_x/y` MLPs saw — it measured the worst of everything tried (about 6-7 px mean error at every size, vs ~4 for caps near 0.98-0.99). The gain of a cap over the original is modest on average (~15% below 1008 over 91 boxes; the single-box sweep that picked 0.987654321 showed ~63% at 420). `cap = 71/72` measured as good or better and is exactly a no-op at 1008, so it is the principled alternative. Full data, mechanism and rejected variants: `SAM3_test/GETCOORDS_INVESTIGATION.md`.
-
-`Sam3Wrapper.forward()` still clamps the final box to `[0,1]` as a safety net. Also: `_VisionEncoder.__init__` rewrites `position_ids`/position embeddings on the shared `Sam3Model`, so wrappers for different `imgsz` must not coexist on one model instance.
+At H = 72 both are the identity. Rejected: letting the grid end at 1.0, content resolution, window padding, encoder RoPE/abs-pos. Full evidence: `SAM3_test/BOX_SHRINK_INVESTIGATION.md` (supersedes `GETCOORDS_INVESTIGATION.md`). `ESAM3_test` still carries the older cap `0.987654321`, not re-verified.
 
 ### ESAM3_test/ (experimental, export-only)
 
@@ -120,7 +124,7 @@ No DeepStream pipeline script exists for this variant — `infer_engine_efficien
 
 ### SAM3_test/ (investigation artifacts)
 
-`GETCOORDS_INVESTIGATION.md` plus csv sweeps and before/after jpgs documenting the `_get_coords` box-undershoot investigation above, `bus.jpg` (Ultralytics sample, 810×1080) and two re-check scripts (`check_cap_multiimage.py`, `check_class_independence.py`; run from the repo root with `HF_TOKEN`). Read the md before touching that patch.
+`BOX_SHRINK_INVESTIGATION.md` (final fix, ground-truth evidence; scripts `collect_box_pairs.py`, `analyze_box_pairs.py`, `eval_engine_person.py` for engines; raw pairs in `results_pairs/`) and `GETCOORDS_INVESTIGATION.md` (earlier), plus csv sweeps and before/after jpgs documenting the `_get_coords` box-undershoot investigation above, `bus.jpg` (Ultralytics sample, 810×1080) and two re-check scripts (`check_cap_multiimage.py`, `check_class_independence.py`; run from the repo root with `HF_TOKEN`). Read the md before touching that patch.
 
 ### DeepStream pipeline gotchas (measured on this hardware — RTX 50-series, driver 610.x, DS 9.1)
 

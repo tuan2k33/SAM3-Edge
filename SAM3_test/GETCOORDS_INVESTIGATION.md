@@ -222,12 +222,12 @@ H=100(1400):  0.9900  deviation +0.0039   <- OPPOSITE sign, explains why "before
 
 ## Current code state
 
-`SAM3Fixed/export.py` and `ESAM3_test/specialize_efficientsam3.py` now use
-**`cap=0.987654321`** (commit `ad04c53`) — finalized after the
-71-point sweep (see below) confirmed it beats both `cap=0.99` and a full
-`cap=1.00` on 3 of 4 spot-check sizes. `EfficientSAM3`'s value is carried
-over from this investigation (run entirely on the original SAM3), not
-independently re-verified on its own decoder.
+`SAM3Fixed/export.py` uses `arange(0,H)/(H-1) * 71/72` (`_TRAIN_GRID = 72`): the grid always ends at 71/72, the value
+seen in training, and is the original grid at H = 72 (imgsz 1008 unaffected). Before 2026-10-23 it used
+`cap=0.987654321`, a number picked by hand during the single-bus-box sweep above (not derived from anything); the
+re-check below found 71/72 equal or better on average and exactly neutral at 1008, so it replaced it.
+`ESAM3_test/specialize_efficientsam3.py` still has the old 0.987654321 (carried over from SAM3, never verified on the
+EfficientSAM3 decoder).
 
 ## Image files in this folder
 
@@ -269,15 +269,13 @@ mean |coordinate deviation| (px) vs the original formula at 1008 (same proxy as 
 - 71/72 is as good as or better than 0.987654321 on average, and is *exactly* the original grid at 1008
   (`(H-1)/H = 71/72` at H=72), so it is a no-op at the native size; 0.987654321 shifts 1008 by ~0.6 px.
   71/72 is also the max coordinate the box-RPB MLPs saw in training (see mechanism above), so it is the
-  principled choice. The code still uses 0.987654321; switching to 71/72 is a one-line change in `_COORDS_CAP`
-  (`SAM3Fixed/export.py`, `ESAM3_test/specialize_efficientsam3.py`).
+  principled choice, and what the code uses now (see Current code state).
 - Caveats: proxy metric only; at 420 only 34-55 of the 91 boxes match the 1008 reference at IoU >= 0.5, and the
   matched subset differs per cap (see counts in the script output), so small differences between non-1.0 caps are
   not significant.
 
 ## Not done yet / possible next steps
 
-- Decide on `_COORDS_CAP = 71/72` (see Re-check).
 - Re-check on labeled data (the proxy is the buggy model itself); `check_cap_multiimage.py` is the harness.
 - To remove the distribution-shift issue entirely: fine-tune the 3 MLPs
   (`box_rpb_embed_x/y`, `box_head`) with `_get_coords` fixed and held

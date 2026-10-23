@@ -31,3 +31,6 @@ build/
 
 # pipeline output videos
 output/
+
+# downloaded test data
+SAM3_test/data/
