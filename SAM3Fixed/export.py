@@ -32,15 +32,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from transformers.models.sam3 import Sam3Model, Sam3Processor
-from transformers.models.sam3.modeling_sam3 import Sam3DetrDecoder, Sam3SinePositionEmbedding, Sam3ViTRotaryEmbedding
+from transformers.models.sam3.modeling_sam3 import Sam3DetrDecoder, Sam3ViTRotaryEmbedding
 
 
 # ── Fixes for running at imgsz != 1008 ─────────────────────────────────────
 # Applied at import, no-ops at H = 72. Evidence: test/BOX_SHRINK_INVESTIGATION.md
-# 1) decoder grid ends at the trained 71/72 for any H; 2) query box scaled by (H/72)**a before its sine encoding.
+# Decoder grid ends at the trained 71/72 for any H. (A query-box scale was tried and is removed for now.)
 _TRAIN_GRID = 72                 # H at the checkpoint's training size (imgsz 1008 / patch 14)
-_QUERY_BOX_SCALE_EXP = 1.0       # a in (H/_TRAIN_GRID)**a
-_APPLY_QUERY_BOX_SCALE = True    # experiments switch it off to start from the unpatched decoder
 
 
 def _get_coords_denom_fix(self, height, width, dtype, device):
@@ -50,21 +48,6 @@ def _get_coords_denom_fix(self, height, width, dtype, device):
 
 
 Sam3DetrDecoder._get_coords = _get_coords_denom_fix
-
-# wrap the original so importing both export modules does not apply the scale twice
-if not hasattr(Sam3SinePositionEmbedding, "_orig_encode_boxes"):
-    Sam3SinePositionEmbedding._orig_encode_boxes = Sam3SinePositionEmbedding.encode_boxes
-
-
-def _encode_boxes_scaled(self, boxes):
-    return Sam3SinePositionEmbedding._orig_encode_boxes(self, boxes * getattr(self, "box_scale", 1.0))
-
-
-Sam3SinePositionEmbedding.encode_boxes = _encode_boxes_scaled
-
-
-def _query_box_scale(H):
-    return (H / _TRAIN_GRID) ** _QUERY_BOX_SCALE_EXP
 
 
 # ── Sinusoidal pos enc ────────────────────────────────────────────────────────
@@ -188,8 +171,6 @@ class _Decoder(nn.Module):
         return torch.stack([cx - w/2, cy - h/2, cx + w/2, cy + h/2], dim=-1)
 
     def _decode(self, fpn_feat_2, fpn_pos_2, text_features, text_mask):
-        if _APPLY_QUERY_BOX_SCALE:
-            self.detr_decoder.position_encoding.box_scale = _query_box_scale(int(fpn_feat_2.shape[-1]))
         enc = self.detr_encoder(
             vision_features   = [fpn_feat_2],
             text_features     = text_features,

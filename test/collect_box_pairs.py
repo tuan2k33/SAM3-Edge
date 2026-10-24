@@ -14,7 +14,7 @@ clipped to the image, a true fp16 model. A GT box is paired with the best-IoU un
   orig        original grid arange(0,H)/H
   <number>    grid arange(0,H)/(H-1) * number   (a fraction like 71/72 is accepted; 1.0 = grid ending at 1.0)
   cell        original grid, deltas scaled by H/72 before the 8x + log2 encoding (distances in units of cells)
-  prod        the fixes as shipped in SAM3Fixed/export.py / SAM3Open/export.py (grid 71/72 + query box scale (H/72)**a)
+  prod        the fix as shipped in SAM3Fixed/export.py / SAM3Open/export.py (grid 71/72; the query box scale is research-only: sineq)
   <enc>+<grid>  a decoder patch plus a grid variant, e.g. sineq1.2+71/72 (enc part: sineq<a>, grid part: orig or a cap)
   ropecell    global-layer RoPE positions scaled by Hp/72 (1 cell = 1/3 RoPE unit at every size, as in training)
   peinterp    absolute position embedding = the trained 72x72 (tiled) map resampled bilinearly to Hp x Hp
@@ -161,9 +161,6 @@ def forward_encpad(w, x, tf, tm, content):
 
 
 def set_variant(v):
-    # the shipped query-box scale is only on for "prod"; every other variant starts from the unpatched decoder
-    E._APPLY_QUERY_BOX_SCALE = OE._APPLY_QUERY_BOX_SCALE = (v == "prod")
-    model.detr_decoder.position_encoding.box_scale = 1.0
     Sam3DetrDecoder._get_rpb_matrix = ORIG_RPB
     Sam3DetrDecoder._get_coords = orig_grid
     if v == "prod":                                           # exactly what the export scripts ship

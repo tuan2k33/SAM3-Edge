@@ -1,4 +1,4 @@
-"""bus.jpg, 'person' + 'bus': before (original decoder) / after (fixes as shipped) / reference, one image per imgsz.
+"""bus.jpg, 'person' + 'bus': before (original decoder) / shipped (71/72 grid) / 71/72 + sineq (research) / reference, one image per imgsz.
 
 bus.jpg has no ground-truth labels: the reference (blue) is the shipped model at 1008, the resolution it was trained at
 (on COCO it matches GT to ~1% in box size, see BOX_SHRINK_INVESTIGATION.md). Eager fp16, one wrapper per imgsz.
@@ -34,9 +34,12 @@ te, am = E.encode_concepts(model, proc, CLASSES); te, am = te.cuda(), (am > 0).c
 img = cv2.imread(os.path.join(HERE, "bus.jpg")); h0, w0 = img.shape[:2]
 
 
-def run(S, shipped, grid_only=False):
-    E._APPLY_QUERY_BOX_SCALE = OE._APPLY_QUERY_BOX_SCALE = shipped and not grid_only
-    model.detr_decoder.position_encoding.box_scale = 1.0
+def run(S, shipped, sineq=False):
+    penc = model.detr_decoder.position_encoding
+    penc.__dict__.pop("encode_boxes", None)
+    if sineq:                                                   # research variant, not shipped: box * H/72 before its sine encoding
+        base = penc.encode_boxes; factor = (S // 14) / 72
+        penc.encode_boxes = lambda boxes: base(boxes * factor)
     Sam3DetrDecoder._get_coords = SHIPPED if shipped else orig_grid
     w = OE.DynamicVisionDecoderWrapper(model, "cuda", S).cuda().eval().half(); w.scale = w.scale.float()
     x = (cv2.cvtColor(cv2.resize(img, (S, S)), cv2.COLOR_BGR2RGB).astype(np.float32) - 127.5) / 127.5
@@ -69,11 +72,11 @@ def nms(d, thr=0.6):
 
 ref = nms(run(1008, True))
 for S in args.sizes:
-    before, grid, after = nms(run(S, False)), nms(run(S, True, grid_only=True)), nms(run(S, True))
+    before, grid, after = nms(run(S, False)), nms(run(S, True)), nms(run(S, True, sineq=True))
     vis = img.copy()
     cv2.rectangle(vis, (0, 0), (330, 138), (255, 255, 255), -1)
     for i, (t, col) in enumerate([(f"SAM3 imgsz={S} bus+person", (0, 0, 0)), ("before (original decoder)", (0, 0, 255)),
-                                  ("only 71/72 grid", (0, 140, 255)), ("after (71/72 + sineq)", (0, 170, 0)), ("reference (1008)", (255, 0, 0))]):
+                                  ("shipped (71/72 grid)", (0, 140, 255)), ("71/72 + sineq (research)", (0, 170, 0)), ("reference (1008)", (255, 0, 0))]):
         cv2.putText(vis, t, (8, 22 + 26 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2)
     draw(vis, ref, (255, 0, 0), 4); draw(vis, before, (0, 0, 255), 2); draw(vis, grid, (0, 140, 255), 2); draw(vis, after, (0, 170, 0), 2)
     cv2.imwrite(os.path.join(HERE, f"sam3_bus_before_after_ref_{S}.jpg"), vis)

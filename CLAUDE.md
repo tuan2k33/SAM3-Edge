@@ -99,11 +99,9 @@ row *b* slot *k* = camera *b*'s k-th class encoding (from `text_encoder.engine`,
 
 ### The imgsz != 1008 box-accuracy fix
 
-The checkpoint was only trained at imgsz 1008 (H = 72 cells of 14 px). At other `imgsz` the boxes shrink toward the top-left corner (width ~ -10% at 420), smoothly in H. Both `SAM3Fixed/export.py` and `SAM3Open/export.py` (self-contained, keep the two blocks in sync) apply, at **module import time** and baked into every exported engine (no flag):
-- `Sam3DetrDecoder._get_coords` -> `arange(0,H)/(H-1) * 71/72` (`_TRAIN_GRID = 72`): fixes the box *centre*; the original grid `arange/H` is only a convention.
-- `Sam3SinePositionEmbedding.encode_boxes` multiplies the box by `box_scale = (H/72)^1.0` (set per forward in `_Decoder._decode` from the feature map size): fixes the box *size* (width -10.4% -> -1.8% at 420 on held-out images, TensorRT FP16 engine). Root cause is in the decoder's box position encoding, not the grid; the exponent is empirical (a=1 = "72-grid frame"), no derivation.
+The checkpoint was only trained at imgsz 1008 (H = 72 cells of 14 px). At other `imgsz` the boxes shrink toward the top-left corner (width ~ -10% at 420), smoothly in H. Both `SAM3Fixed/export.py` and `SAM3Open/export.py` (self-contained, keep the two blocks in sync) patch `Sam3DetrDecoder._get_coords` at **module import time**, baked into every exported engine (no flag): `arange(0,H)/(H-1) * 71/72` (`_TRAIN_GRID = 72`). This fixes the box *centre*, is the identity at H = 72, and the original grid `arange/H` is only a convention.
 
-At H = 72 both are the identity. Rejected: letting the grid end at 1.0, content resolution, window padding, encoder RoPE/abs-pos. Full evidence: `test/BOX_SHRINK_INVESTIGATION.md`.
+The box *size* is not fixed by it. A query-box scale (`Sam3SinePositionEmbedding.encode_boxes` on `box * (H/72)`, "sineq") fixes it empirically (width -10.4% -> -1.8% at 420) but is **not shipped** while its mechanism and exponent are researched; it lives only in `test/` (`collect_box_pairs.py` variant `sineq`, `compare_bus.py`). Engines built before this change may still carry it. Rejected: letting the grid end at 1.0, content resolution, window padding, encoder RoPE/abs-pos. Full evidence: `test/BOX_SHRINK_INVESTIGATION.md`.
 
 ### test/ (investigation artifacts)
 

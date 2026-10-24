@@ -19,8 +19,9 @@ Real-time open-vocabulary detection and instance segmentation on multi-camera RT
 <summary><strong>2026-10-23</strong></summary>
 
 - **Fix box shrink at imgsz != 1008.** The checkpoint was trained only at 1008 (72x72 cells); at other sizes boxes shrank toward the top-left
-  (width -10% at 420). Both `SAM3Fixed` and `SAM3Open` now patch the decoder (box position encoding scaled by `imgsz/1008`, grid ends at 71/72),
-  baked into every exported engine. Width error at 420: -10.4% -> -1.8% (held-out COCO images, TensorRT FP16). 1008 is unchanged.
+  (width -10% at 420). Both `SAM3Fixed` and `SAM3Open` now patch the decoder grid to end at the trained 71/72, baked into every exported engine
+  (centre fix; 1008 is unchanged). A query-box scale (`sineq`, `imgsz/1008`) that also fixes the box size (width -10.4% -> -1.8% at 420) was tested
+  but is not shipped yet while it is researched further.
   Evidence: `test/BOX_SHRINK_INVESTIGATION.md`. 
 
 </details>

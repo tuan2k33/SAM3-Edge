@@ -1,6 +1,6 @@
 # Boxes shrink when SAM3 runs at `imgsz` != 1008: research log
 
-Updated: 2026-10-23. Status: done, shipped in `SAM3Fixed/export.py` and `SAM3Open/export.py` (step 11).
+Updated: 2026-10-24. Status: the `71/72` grid is shipped in `SAM3Fixed/export.py` and `SAM3Open/export.py`; the `sineq` query-box scale (steps 9-11) was **removed from the export scripts for further research** (it stays in `test/` as a variant). Engines built before 2026-10-24 may still contain it.
 Background: the starting point was the hypothesis "bug in `_get_coords`" (an earlier single-image bus experiment, removed from the repo, still in git history). This file re-checks that hypothesis against ground truth and looks for the real cause.
 
 ## 0. Summary
@@ -10,7 +10,7 @@ Background: the starting point was the hypothesis "bug in `_get_coords`" (an ear
 - It **lives in the decoder** (step 8: with the encoder at H=72 and the decoder at a small H the shrink comes back intact).
 - Inside the decoder, the **sine encoding of the query boxes** is what matters: multiplying the box coordinates by `H/72` before it (`sineq`) cuts the **slope over H about 4x** (width +2.04 -> +0.51 %/10 cells) and squeezes the error **at every size from 336 to 1260** into about -4.6% ... +0.4% (original: -13.1% ... +1.5%), with no change at 1008 and unchanged recall. An exponent sweep gives a smooth, monotonic dose-response at 420, 700 and 1260. The zero crossing is not at one fixed exponent (0.34-1.49 depending on size and axis), so `H/72` is a good approximation, not an exact formula.
 - The `71/72` grid is **not the root cause**: it mostly shifts the box (centre) and does not fix its size; at 1008 it is a no-op. It is still useful to centre the box when used together with `sineq`.
-- **Decision:** `sineq` with `a = 1` (factor `H/72`) + grid `arange/(H-1)*71/72`. Step 11 has held-out numbers and a real TensorRT FP16 engine.
+- **Decision (2026-10-23):** `sineq` with `a = 1` (factor `H/72`) + grid `arange/(H-1)*71/72`; step 11 has held-out numbers and a real TensorRT FP16 engine. **Update (2026-10-24):** `sineq` is not shipped for now (mechanism and exponent unexplained), only the grid is.
 
 ## 0b. Rejected directions (raw results removed, rerun with `collect_box_pairs.py`)
 
@@ -236,7 +236,7 @@ Reading: the error at every size is squeezed into a narrow band around 0, **incl
 
 The result holds, the slope goes to ~0.
 
-**(c) Integration.** The same "Fixes for running at imgsz != 1008" block in `SAM3Fixed/export.py` and `SAM3Open/export.py` (each file self-contained): `Sam3DetrDecoder._get_coords` -> `arange/(H-1)*71/72`; `Sam3SinePositionEmbedding.encode_boxes` multiplies the box by `box_scale = (H/72)^1.0`, with `H` taken from the feature map at export time (a constant in the graph). At 1008 the factor is 1 and the grid is the original. The eager production path equals the experiment's `sineq+71/72` (difference 0.0000); Fixed and Open agree within FP16 error.
+**(c) Integration (as of 2026-10-23; `sineq` removed since).** The same "Fixes for running at imgsz != 1008" block in `SAM3Fixed/export.py` and `SAM3Open/export.py` (each file self-contained): `Sam3DetrDecoder._get_coords` -> `arange/(H-1)*71/72`; `Sam3SinePositionEmbedding.encode_boxes` multiplies the box by `box_scale = (H/72)^1.0`, with `H` taken from the feature map at export time (a constant in the graph). At 1008 the factor is 1 and the grid is the original. The eager production path equals the experiment's `sineq+71/72` (difference 0.0000); Fixed and Open agree within FP16 error.
 
 **(d) Real TensorRT FP16 engine** (`eval_engine_person.py`, class `person` only, 420):
 
