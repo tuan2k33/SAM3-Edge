@@ -34,3 +34,4 @@ output/
 
 # downloaded test data
 test/data/
+test/coco_vis/
