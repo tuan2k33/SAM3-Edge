@@ -1,0 +1,30 @@
+  [+] 'sink'  (1, 32, 256)
+  [+] 'refrigerator'  (1, 32, 256)
+  [+] 'book'  (1, 32, 256)
+  [+] 'clock'  (1, 32, 256)
+  [+] 'vase'  (1, 32, 256)
+  [+] 'scissors'  (1, 32, 256)
+  [+] 'teddy bear'  (1, 32, 256)
+  [+] 'hair drier'  (1, 32, 256)
+  [+] 'toothbrush'  (1, 32, 256)
+
+imgsz 1008, 64 images
+prompt                thr  recall@.5  precision  pred/img
+object                0.5      0.004      0.400      0.08
+object                0.3      0.022      0.156      1.00
+objects               0.5      0.000      0.000      0.00
+objects               0.3      0.000      0.000      0.00
+thing                 0.5      0.004      1.000      0.02
+thing                 0.3      0.004      0.222      0.14
+main object           0.5      0.009      0.500      0.06
+main object           0.3      0.017      0.500      0.09
+salient object        0.5      0.000      0.170      0.73
+salient object        0.3      0.022      0.232      2.16
+foreground object     0.5      0.160      0.632      0.89
+foreground object     0.3      0.338      0.552      2.55
+prominent object      0.5      0.212      0.306      4.55
+prominent object      0.3      0.420      0.289     10.70
+item                  0.5      0.065      0.418      2.58
+item                  0.3      0.121      0.314      5.28
+oracle                0.5      0.900      0.754      5.72
+oracle                0.3      0.913      0.610      7.66

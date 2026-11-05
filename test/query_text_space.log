@@ -1,0 +1,9 @@
+
+imgsz 1008, 64 images, chance top1 0.013 top5 0.062; |text| min/max 5.4/7.1
+decoded with          n |       raw dot |        cosine | dot, mean-removed   (top1/top5)
+object              193 |   0.000/0.031 |   0.000/0.052 |       0.005/0.083
+foreground object   227 |   0.000/0.022 |   0.004/0.044 |       0.026/0.053
+prominent object    203 |   0.000/0.044 |   0.010/0.074 |       0.010/0.074
+item                199 |   0.000/0.055 |   0.005/0.050 |       0.025/0.085
+oracle              224 |   0.004/0.022 |   0.000/0.049 |       0.000/0.027
+  most frequent raw argmax: [('microwave', 111), ('sheep', 63), ('toaster', 13), ('baseball glove', 9)]

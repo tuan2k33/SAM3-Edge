@@ -1,0 +1,87 @@
+images 64 GT boxes 226
+Loading weights:   0%|          | 0/1468 [00:00<?, ?it/s]Loading weights:   5%|▍         | 67/1468 [00:00<00:02, 669.70it/s]Loading weights:   9%|▉         | 134/1468 [00:00<00:02, 602.63it/s]Loading weights:  13%|█▎        | 195/1468 [00:00<00:02, 579.59it/s]Loading weights:  17%|█▋        | 254/1468 [00:00<00:02, 579.05it/s]Loading weights:  22%|██▏       | 316/1468 [00:00<00:01, 589.48it/s]Loading weights:  26%|██▌       | 376/1468 [00:01<00:04, 254.96it/s]Loading weights:  29%|██▊       | 420/1468 [00:01<00:05, 208.40it/s]Loading weights:  31%|███       | 454/1468 [00:01<00:05, 186.09it/s]Loading weights:  33%|███▎      | 482/1468 [00:01<00:05, 173.31it/s]Loading weights:  34%|███▍      | 505/1468 [00:01<00:05, 170.30it/s]Loading weights:  36%|███▌      | 526/1468 [00:02<00:06, 135.99it/s]Loading weights:  37%|███▋      | 543/1468 [00:03<00:13, 68.50it/s] Loading weights:  38%|███▊      | 556/1468 [00:03<00:22, 41.02it/s]Loading weights:  39%|███▊      | 566/1468 [00:04<00:27, 33.31it/s]Loading weights:  39%|███▉      | 573/1468 [00:05<00:31, 28.06it/s]Loading weights:  39%|███▉      | 579/1468 [00:05<00:36, 24.08it/s]Loading weights:  40%|███▉      | 585/1468 [00:05<00:35, 25.10it/s]Loading weights:  40%|████      | 589/1468 [00:05<00:36, 23.79it/s]Loading weights:  40%|████      | 593/1468 [00:06<00:37, 23.05it/s]Loading weights:  41%|████      | 600/1468 [00:06<00:34, 25.33it/s]Loading weights:  41%|████      | 603/1468 [00:06<00:34, 25.21it/s]Loading weights:  41%|████▏     | 606/1468 [00:06<00:48, 17.89it/s]Loading weights:  41%|████▏     | 609/1468 [00:07<00:49, 17.21it/s]Loading weights:  42%|████▏     | 611/1468 [00:07<00:53, 15.90it/s]Loading weights:  42%|████▏     | 613/1468 [00:07<01:06, 12.87it/s]Loading weights:  42%|████▏     | 615/1468 [00:07<01:29,  9.57it/s]Loading weights:  42%|████▏     | 618/1468 [00:08<01:15, 11.21it/s]Loading weights:  42%|████▏     | 620/1468 [00:08<01:31,  9.24it/s]Loading weights:  42%|████▏     | 623/1468 [00:08<01:10, 11.95it/s]Loading weights:  43%|████▎     | 627/1468 [00:08<01:05, 12.77it/s]Loading weights:  43%|████▎     | 629/1468 [00:08<01:09, 12.09it/s]Loading weights:  43%|████▎     | 633/1468 [00:09<00:50, 16.47it/s]Loading weights:  43%|████▎     | 636/1468 [00:09<00:47, 17.35it/s]Loading weights:  44%|████▎     | 639/1468 [00:09<01:05, 12.62it/s]Loading weights:  44%|████▎     | 642/1468 [00:09<00:54, 15.22it/s]Loading weights:  44%|████▍     | 645/1468 [00:10<01:01, 13.36it/s]Loading weights:  44%|████▍     | 647/1468 [00:10<01:09, 11.86it/s]Loading weights:  44%|████▍     | 649/1468 [00:10<01:03, 12.88it/s]Loading weights:  44%|████▍     | 651/1468 [00:10<00:58, 13.99it/s]Loading weights:  44%|████▍     | 653/1468 [00:10<01:28,  9.21it/s]Loading weights:  45%|████▍     | 659/1468 [00:11<00:56, 14.37it/s]Loading weights:  45%|████▌     | 661/1468 [00:11<01:07, 11.92it/s]Loading weights:  45%|████▌     | 663/1468 [00:11<01:27,  9.16it/s]Loading weights:  45%|████▌     | 665/1468 [00:11<01:24,  9.46it/s]Loading weights:  46%|████▌     | 669/1468 [00:12<01:07, 11.77it/s]Loading weights:  46%|████▌     | 671/1468 [00:12<01:18, 10.10it/s]Loading weights:  46%|████▌     | 677/1468 [00:12<01:06, 11.85it/s]Loading weights:  46%|████▋     | 679/1468 [00:13<01:17, 10.17it/s]Loading weights:  46%|████▋     | 682/1468 [00:13<01:08, 11.54it/s]Loading weights:  47%|████▋     | 684/1468 [00:13<01:18,  9.97it/s]Loading weights:  47%|████▋     | 688/1468 [00:13<00:58, 13.34it/s]Loading weights:  47%|████▋     | 690/1468 [00:13<01:00, 12.90it/s]Loading weights:  47%|████▋     | 692/1468 [00:14<01:00, 12.73it/s]Loading weights:  47%|████▋     | 694/1468 [00:14<01:03, 12.24it/s]Loading weights:  47%|████▋     | 696/1468 [00:14<01:21,  9.43it/s]Loading weights:  48%|████▊     | 698/1468 [00:14<01:19,  9.70it/s]Loading weights:  48%|████▊     | 700/1468 [00:15<01:10, 10.85it/s]Loading weights:  48%|████▊     | 702/1468 [00:15<01:10, 10.90it/s]Loading weights:  48%|████▊     | 705/1468 [00:15<00:53, 14.37it/s]Loading weights:  48%|████▊     | 707/1468 [00:15<01:06, 11.50it/s]Loading weights:  48%|████▊     | 709/1468 [00:15<01:08, 11.08it/s]Loading weights:  48%|████▊     | 711/1468 [00:15<01:12, 10.40it/s]Loading weights:  49%|████▊     | 715/1468 [00:16<01:14, 10.12it/s]Loading weights:  49%|████▉     | 722/1468 [00:16<00:42, 17.47it/s]Loading weights:  49%|████▉     | 725/1468 [00:16<00:42, 17.37it/s]Loading weights:  50%|████▉     | 728/1468 [00:16<00:41, 17.67it/s]Loading weights:  50%|████▉     | 731/1468 [00:17<00:41, 17.87it/s]Loading weights:  50%|█████     | 734/1468 [00:17<00:46, 15.74it/s]Loading weights:  50%|█████     | 737/1468 [00:17<00:41, 17.62it/s]Loading weights:  50%|█████     | 739/1468 [00:17<00:44, 16.29it/s]Loading weights:  50%|█████     | 741/1468 [00:17<00:47, 15.23it/s]Loading weights:  51%|█████     | 743/1468 [00:17<00:50, 14.27it/s]Loading weights:  51%|█████     | 746/1468 [00:18<00:51, 14.00it/s]Loading weights:  51%|█████     | 750/1468 [00:18<00:41, 17.29it/s]Loading weights:  51%|█████▏    | 755/1468 [00:18<00:34, 20.46it/s]Loading weights:  52%|█████▏    | 758/1468 [00:18<00:35, 19.74it/s]Loading weights:  52%|█████▏    | 765/1468 [00:18<00:26, 26.46it/s]Loading weights:  52%|█████▏    | 768/1468 [00:18<00:29, 23.68it/s]Loading weights:  53%|█████▎    | 771/1468 [00:19<00:35, 19.48it/s]Loading weights:  53%|█████▎    | 774/1468 [00:19<00:38, 17.92it/s]Loading weights:  53%|█████▎    | 776/1468 [00:19<00:48, 14.33it/s]Loading weights:  53%|█████▎    | 779/1468 [00:19<00:50, 13.60it/s]Loading weights:  53%|█████▎    | 781/1468 [00:20<00:52, 13.03it/s]Loading weights:  54%|█████▎    | 787/1468 [00:20<00:37, 18.24it/s]Loading weights:  54%|█████▎    | 789/1468 [00:20<00:50, 13.49it/s]Loading weights:  54%|█████▍    | 792/1468 [00:20<00:47, 14.34it/s]Loading weights:  54%|█████▍    | 796/1468 [00:20<00:39, 16.87it/s]Loading weights:  54%|█████▍    | 798/1468 [00:21<00:47, 14.17it/s]Loading weights:  55%|█████▍    | 802/1468 [00:21<00:44, 15.07it/s]Loading weights:  55%|█████▍    | 804/1468 [00:21<00:47, 14.08it/s]Loading weights:  55%|█████▍    | 806/1468 [00:21<00:48, 13.71it/s]Loading weights:  55%|█████▌    | 808/1468 [00:22<01:00, 11.00it/s]Loading weights:  55%|█████▌    | 814/1468 [00:22<00:36, 17.81it/s]Loading weights:  56%|█████▌    | 818/1468 [00:22<00:33, 19.13it/s]Loading weights:  56%|█████▌    | 821/1468 [00:22<00:41, 15.64it/s]Loading weights:  56%|█████▋    | 827/1468 [00:22<00:34, 18.63it/s]Loading weights:  57%|█████▋    | 830/1468 [00:23<00:36, 17.29it/s]Loading weights:  57%|█████▋    | 832/1468 [00:23<00:38, 16.56it/s]Loading weights:  57%|█████▋    | 838/1468 [00:23<00:25, 24.24it/s]Loading weights:  57%|█████▋    | 841/1468 [00:23<00:32, 19.28it/s]Loading weights: 100%|██████████| 1468/1468 [00:23<00:00, 62.23it/s]
+[transformers] `memory_attention_rope_theta` is deprecated and will be removed in v5.0. Use `rope_parameters['rope_theta']` instead.
+[Encode] 80 class(es): ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard', 'tennis racket', 'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch', 'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush']
+  [+] 'person'  (1, 32, 256)
+  [+] 'bicycle'  (1, 32, 256)
+  [+] 'car'  (1, 32, 256)
+  [+] 'motorcycle'  (1, 32, 256)
+  [+] 'airplane'  (1, 32, 256)
+  [+] 'bus'  (1, 32, 256)
+  [+] 'train'  (1, 32, 256)
+  [+] 'truck'  (1, 32, 256)
+  [+] 'boat'  (1, 32, 256)
+  [+] 'traffic light'  (1, 32, 256)
+  [+] 'fire hydrant'  (1, 32, 256)
+  [+] 'stop sign'  (1, 32, 256)
+  [+] 'parking meter'  (1, 32, 256)
+  [+] 'bench'  (1, 32, 256)
+  [+] 'bird'  (1, 32, 256)
+  [+] 'cat'  (1, 32, 256)
+  [+] 'dog'  (1, 32, 256)
+  [+] 'horse'  (1, 32, 256)
+  [+] 'sheep'  (1, 32, 256)
+  [+] 'cow'  (1, 32, 256)
+  [+] 'elephant'  (1, 32, 256)
+  [+] 'bear'  (1, 32, 256)
+  [+] 'zebra'  (1, 32, 256)
+  [+] 'giraffe'  (1, 32, 256)
+  [+] 'backpack'  (1, 32, 256)
+  [+] 'umbrella'  (1, 32, 256)
+  [+] 'handbag'  (1, 32, 256)
+  [+] 'tie'  (1, 32, 256)
+  [+] 'suitcase'  (1, 32, 256)
+  [+] 'frisbee'  (1, 32, 256)
+  [+] 'skis'  (1, 32, 256)
+  [+] 'snowboard'  (1, 32, 256)
+  [+] 'sports ball'  (1, 32, 256)
+  [+] 'kite'  (1, 32, 256)
+  [+] 'baseball bat'  (1, 32, 256)
+  [+] 'baseball glove'  (1, 32, 256)
+  [+] 'skateboard'  (1, 32, 256)
+  [+] 'surfboard'  (1, 32, 256)
+  [+] 'tennis racket'  (1, 32, 256)
+  [+] 'bottle'  (1, 32, 256)
+  [+] 'wine glass'  (1, 32, 256)
+  [+] 'cup'  (1, 32, 256)
+  [+] 'fork'  (1, 32, 256)
+  [+] 'knife'  (1, 32, 256)
+  [+] 'spoon'  (1, 32, 256)
+  [+] 'bowl'  (1, 32, 256)
+  [+] 'banana'  (1, 32, 256)
+  [+] 'apple'  (1, 32, 256)
+  [+] 'sandwich'  (1, 32, 256)
+  [+] 'orange'  (1, 32, 256)
+  [+] 'broccoli'  (1, 32, 256)
+  [+] 'carrot'  (1, 32, 256)
+  [+] 'hot dog'  (1, 32, 256)
+  [+] 'pizza'  (1, 32, 256)
+  [+] 'donut'  (1, 32, 256)
+  [+] 'cake'  (1, 32, 256)
+  [+] 'chair'  (1, 32, 256)
+  [+] 'couch'  (1, 32, 256)
+  [+] 'potted plant'  (1, 32, 256)
+  [+] 'bed'  (1, 32, 256)
+  [+] 'dining table'  (1, 32, 256)
+  [+] 'toilet'  (1, 32, 256)
+  [+] 'tv'  (1, 32, 256)
+  [+] 'laptop'  (1, 32, 256)
+  [+] 'mouse'  (1, 32, 256)
+  [+] 'remote'  (1, 32, 256)
+  [+] 'keyboard'  (1, 32, 256)
+  [+] 'cell phone'  (1, 32, 256)
+  [+] 'microwave'  (1, 32, 256)
+  [+] 'oven'  (1, 32, 256)
+  [+] 'toaster'  (1, 32, 256)
+  [+] 'sink'  (1, 32, 256)
+  [+] 'refrigerator'  (1, 32, 256)
+  [+] 'book'  (1, 32, 256)
+  [+] 'clock'  (1, 32, 256)
+  [+] 'vase'  (1, 32, 256)
+  [+] 'scissors'  (1, 32, 256)
+  [+] 'teddy bear'  (1, 32, 256)
+  [+] 'hair drier'  (1, 32, 256)
+  [+] 'toothbrush'  (1, 32, 256)
+done 420 wbias_0_0_0.02_0.01+71/72: 204 pairs of 226 GT -> /mnt/c/Dev/projects/SAM3-Edge/test/results_pairs/420_wbias_0_0_0.02_0.01+71-72_n64.json
+done 420 wbias_0_0_0.04_0.02+71/72: 205 pairs of 226 GT -> /mnt/c/Dev/projects/SAM3-Edge/test/results_pairs/420_wbias_0_0_0.04_0.02+71-72_n64.json
+done 420 wbias_0_0_0.06_0.03+71/72: 205 pairs of 226 GT -> /mnt/c/Dev/projects/SAM3-Edge/test/results_pairs/420_wbias_0_0_0.06_0.03+71-72_n64.json

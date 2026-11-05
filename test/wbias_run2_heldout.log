@@ -1,0 +1,87 @@
+[ WARN:0@90.693] global loadsave.cpp:278 findDecoder imread_('/mnt/c/Dev/projects/SAM3-Edge/test/data/coco128/images/train2017/000000000656.jpg'): can't open/read file: check file path/integrity
+[ WARN:0@90.698] global loadsave.cpp:278 findDecoder imread_('/mnt/c/Dev/projects/SAM3-Edge/test/data/coco128/images/train2017/000000000659.jpg'): can't open/read file: check file path/integrity
+images 52 GT boxes 148
+Loading weights:   0%|          | 0/1468 [00:00<?, ?it/s]Loading weights:   7%|▋         | 101/1468 [00:00<00:01, 1003.35it/s]Loading weights:  14%|█▍        | 202/1468 [00:00<00:01, 978.47it/s] Loading weights:  21%|██        | 306/1468 [00:00<00:01, 1004.60it/s]Loading weights:  28%|██▊       | 409/1468 [00:00<00:01, 1010.29it/s]Loading weights:  35%|███▍      | 511/1468 [00:00<00:00, 999.65it/s] Loading weights:  42%|████▏     | 620/1468 [00:00<00:00, 1029.64it/s]Loading weights:  49%|████▉     | 724/1468 [00:01<00:02, 322.53it/s] Loading weights:  54%|█████▍    | 798/1468 [00:01<00:02, 255.21it/s]Loading weights:  58%|█████▊    | 854/1468 [00:02<00:02, 246.99it/s]Loading weights:  61%|██████    | 899/1468 [00:02<00:02, 199.38it/s]Loading weights:  64%|██████▎   | 934/1468 [00:02<00:03, 173.93it/s]Loading weights:  66%|██████▌   | 962/1468 [00:03<00:03, 158.61it/s]Loading weights:  67%|██████▋   | 985/1468 [00:03<00:03, 142.21it/s]Loading weights:  68%|██████▊   | 1004/1468 [00:03<00:03, 141.37it/s]Loading weights:  74%|███████▍  | 1093/1468 [00:03<00:01, 252.33it/s]Loading weights: 100%|██████████| 1468/1468 [00:03<00:00, 407.87it/s]
+[transformers] `memory_attention_rope_theta` is deprecated and will be removed in v5.0. Use `rope_parameters['rope_theta']` instead.
+[Encode] 80 class(es): ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard', 'tennis racket', 'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch', 'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush']
+  [+] 'person'  (1, 32, 256)
+  [+] 'bicycle'  (1, 32, 256)
+  [+] 'car'  (1, 32, 256)
+  [+] 'motorcycle'  (1, 32, 256)
+  [+] 'airplane'  (1, 32, 256)
+  [+] 'bus'  (1, 32, 256)
+  [+] 'train'  (1, 32, 256)
+  [+] 'truck'  (1, 32, 256)
+  [+] 'boat'  (1, 32, 256)
+  [+] 'traffic light'  (1, 32, 256)
+  [+] 'fire hydrant'  (1, 32, 256)
+  [+] 'stop sign'  (1, 32, 256)
+  [+] 'parking meter'  (1, 32, 256)
+  [+] 'bench'  (1, 32, 256)
+  [+] 'bird'  (1, 32, 256)
+  [+] 'cat'  (1, 32, 256)
+  [+] 'dog'  (1, 32, 256)
+  [+] 'horse'  (1, 32, 256)
+  [+] 'sheep'  (1, 32, 256)
+  [+] 'cow'  (1, 32, 256)
+  [+] 'elephant'  (1, 32, 256)
+  [+] 'bear'  (1, 32, 256)
+  [+] 'zebra'  (1, 32, 256)
+  [+] 'giraffe'  (1, 32, 256)
+  [+] 'backpack'  (1, 32, 256)
+  [+] 'umbrella'  (1, 32, 256)
+  [+] 'handbag'  (1, 32, 256)
+  [+] 'tie'  (1, 32, 256)
+  [+] 'suitcase'  (1, 32, 256)
+  [+] 'frisbee'  (1, 32, 256)
+  [+] 'skis'  (1, 32, 256)
+  [+] 'snowboard'  (1, 32, 256)
+  [+] 'sports ball'  (1, 32, 256)
+  [+] 'kite'  (1, 32, 256)
+  [+] 'baseball bat'  (1, 32, 256)
+  [+] 'baseball glove'  (1, 32, 256)
+  [+] 'skateboard'  (1, 32, 256)
+  [+] 'surfboard'  (1, 32, 256)
+  [+] 'tennis racket'  (1, 32, 256)
+  [+] 'bottle'  (1, 32, 256)
+  [+] 'wine glass'  (1, 32, 256)
+  [+] 'cup'  (1, 32, 256)
+  [+] 'fork'  (1, 32, 256)
+  [+] 'knife'  (1, 32, 256)
+  [+] 'spoon'  (1, 32, 256)
+  [+] 'bowl'  (1, 32, 256)
+  [+] 'banana'  (1, 32, 256)
+  [+] 'apple'  (1, 32, 256)
+  [+] 'sandwich'  (1, 32, 256)
+  [+] 'orange'  (1, 32, 256)
+  [+] 'broccoli'  (1, 32, 256)
+  [+] 'carrot'  (1, 32, 256)
+  [+] 'hot dog'  (1, 32, 256)
+  [+] 'pizza'  (1, 32, 256)
+  [+] 'donut'  (1, 32, 256)
+  [+] 'cake'  (1, 32, 256)
+  [+] 'chair'  (1, 32, 256)
+  [+] 'couch'  (1, 32, 256)
+  [+] 'potted plant'  (1, 32, 256)
+  [+] 'bed'  (1, 32, 256)
+  [+] 'dining table'  (1, 32, 256)
+  [+] 'toilet'  (1, 32, 256)
+  [+] 'tv'  (1, 32, 256)
+  [+] 'laptop'  (1, 32, 256)
+  [+] 'mouse'  (1, 32, 256)
+  [+] 'remote'  (1, 32, 256)
+  [+] 'keyboard'  (1, 32, 256)
+  [+] 'cell phone'  (1, 32, 256)
+  [+] 'microwave'  (1, 32, 256)
+  [+] 'oven'  (1, 32, 256)
+  [+] 'toaster'  (1, 32, 256)
+  [+] 'sink'  (1, 32, 256)
+  [+] 'refrigerator'  (1, 32, 256)
+  [+] 'book'  (1, 32, 256)
+  [+] 'clock'  (1, 32, 256)
+  [+] 'vase'  (1, 32, 256)
+  [+] 'scissors'  (1, 32, 256)
+  [+] 'teddy bear'  (1, 32, 256)
+  [+] 'hair drier'  (1, 32, 256)
+  [+] 'toothbrush'  (1, 32, 256)
+done 420 wbias_0_0_0.06_0.03+71/72: 133 pairs of 148 GT -> /mnt/c/Dev/projects/SAM3-Edge/test/results_pairs/420_wbias_0_0_0.06_0.03+71-72_n64_s64.json

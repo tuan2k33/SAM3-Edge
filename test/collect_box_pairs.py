@@ -16,6 +16,8 @@ clipped to the image, a true fp16 model. A GT box is paired with the best-IoU un
   cell        original grid, deltas scaled by H/72 before the 8x + log2 encoding (distances in units of cells)
   prod        the fix as shipped in SAM3Fixed/export.py / SAM3Open/export.py (grid 71/72; the query box scale is research-only: sineq)
   <enc>+<grid>  a decoder patch plus a grid variant, e.g. sineq1.2+71/72 (enc part: sineq<a>, grid part: orig or a cap)
+  wbias_<dcx>_<dcy>_<dw>_<dh>  weight edit, no code patch: adds the four numbers to the output bias of the shared box-refinement
+              head (model.detr_decoder.box_head.layer3), e.g. wbias_0_0_0.04_0.02+71/72 ('+' joins a grid variant)
   ropecell    global-layer RoPE positions scaled by Hp/72 (1 cell = 1/3 RoPE unit at every size, as in training)
   peinterp    absolute position embedding = the trained 72x72 (tiled) map resampled bilinearly to Hp x Hp
   sinekey     decoder key sine positions in the trained 72-frame: (i+1)/72 * 2pi for the first H cells (instead of (i+1)/H)
@@ -49,6 +51,7 @@ ap.add_argument("--variants", default="orig")
 ap.add_argument("--nimg", type=int, default=64)
 ap.add_argument("--skip", type=int, default=0, help="skip the first K usable images (e.g. --skip 64 --nimg 64 = the held-out second half)")
 ap.add_argument("--out", default=os.path.join(HERE, "results_pairs"))
+ap.add_argument("--checkpoint", default="facebook/sam3", help="HF model id or a converted local directory (e.g. weight/hf_sam3.1); the processor always comes from facebook/sam3")
 args = ap.parse_args()
 os.makedirs(args.out, exist_ok=True)
 
@@ -90,7 +93,7 @@ ENC_VARIANTS = ("ropecell", "peinterp", "encpad", "sinekey", "sineq", "frame72")
 
 
 def is_enc(v):
-    return v in ENC_VARIANTS or v.startswith("sineq")
+    return v in ENC_VARIANTS or v.startswith("sineq") or v.startswith("wbias_")
 
 
 def _pe_resampled(vit, Hp):
@@ -128,7 +131,13 @@ def apply_enc_variant(w, v, Hp):
         factor = (Hp / 72) ** alpha
         penc.encode_boxes = lambda boxes: base(boxes * factor)
 
+    bias = model.detr_decoder.box_head.layer3.bias
+    saved_bias = bias.data.clone()
+    if v.startswith("wbias_"):                                        # weight edit: shift the box-refinement head output (cx, cy, w, h logits)
+        bias.data += torch.tensor([float(t) for t in v.split("_")[1:5]], dtype=bias.dtype, device=bias.device)
+
     def undo():
+        bias.data.copy_(saved_bias)
         for l in ve.layers:
             l.position_ids = saved_pos[id(l)]
         ve.vit_pos_embed = saved_pe
@@ -232,7 +241,7 @@ def nms(d, thr=0.6):
 
 
 tok = os.environ["HF_TOKEN"]
-model = Sam3Model.from_pretrained("facebook/sam3", token=tok).half().to("cuda").eval()   # fp16 weights (fp32 + autocast spills out of 4 GB VRAM: 8 s/forward)
+model = Sam3Model.from_pretrained(args.checkpoint, token=tok).half().to("cuda").eval()   # fp16 weights (fp32 + autocast spills out of 4 GB VRAM: 8 s/forward)
 proc = Sam3Processor.from_pretrained("facebook/sam3", token=tok)
 te_all, am_all = E.encode_concepts(model, proc, NAMES)            # all 80 names once (fp32)
 TE, AM = te_all.cuda(), (am_all > 0).cuda()
