@@ -105,7 +105,11 @@ The box *size* is not fixed by it. A query-box scale (`Sam3SinePositionEmbedding
 
 ### test/ (investigation artifacts)
 
-`BOX_SHRINK_INVESTIGATION.md` (final fix, ground-truth evidence; scripts `collect_box_pairs.py`, `analyze_box_pairs.py`, `eval_engine_person.py` for engines; raw pairs in `results_pairs/`) plus `compare_bus.py` / `infer_engine_bus.py` (before/after/reference images on `bus.jpg`, the Ultralytics sample, 810×1080; run from the repo root with `HF_TOKEN`). Read the md before touching that patch.
+Research scripts, not part of the pipelines; all run PyTorch eager FP16 on coco128 (`test/data/`, gitignored), from the repo root, with `HF_TOKEN` (also in `.env`).
+
+- Box shrink: `BOX_SHRINK_INVESTIGATION.md` (final fix + ground-truth evidence; read before touching the `_get_coords` patch), `collect_box_pairs.py` (`--variants` selects decoder/encoder patches incl. `sineq`, `wbias_*` bias edits; `--checkpoint` takes a local dir such as `weight/hf_sam3.1`), `analyze_box_pairs.py`, `eval_engine_person.py`, raw output in `results_pairs*/`, `compare_bus.py` / `infer_engine_bus.py` (before/after images on `bus.jpg`).
+- Sub-block pruning: `PRUNING_SUMMARY.md` only (scripts removed). Conclusion: ~24/106 sub-blocks can be zeroed with no loss, but the speedup is only 9-15% vs 2.9x from imgsz 1008 -> 420, so it is not shipped and not being pursued.
+- Other probes: `floor_imgsz.py`, `grid_shapes.py`, `tiny_imgsz.py` (non-multiple-of-14 and tiny imgsz), `generic_prompts.py`, `query_text_space.py`.
 
 ### DeepStream pipeline gotchas (measured on this hardware — RTX 50-series, driver 610.x, DS 9.1)
 
