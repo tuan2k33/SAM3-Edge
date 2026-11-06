@@ -22,6 +22,7 @@ Usage:
 """
 
 import argparse
+import gc
 import math
 import os
 import subprocess
@@ -268,7 +269,6 @@ class Sam3Wrapper(nn.Module):
 
     def forward(self, pixel_values: torch.Tensor):
         B = pixel_values.shape[0]
-        pixel_values = pixel_values.to(self.text_feat_all.dtype)
 
         if self.with_mask:
             fpn2, fpn_pos, fpn0, fpn1 = self.vision_enc(pixel_values)
@@ -292,7 +292,7 @@ class Sam3Wrapper(nn.Module):
             protos = self._prototypes(fpn0, fpn1, enc_hidden)
             coeffs = self.mask_embedder(dec_queries)
             masks  = torch.einsum("bqk,bkhw->bqhw", coeffs, protos).sigmoid()
-            masks  = F.interpolate(masks, (36, 36), mode="bilinear", align_corners=False).half()
+            masks  = F.interpolate(masks, (36, 36), mode="bilinear", align_corners=False)
             Q = masks.shape[1]
             masks = masks.reshape(B, N * Q, *masks.shape[2:])  # class-major: query i -> class i // Q
         else:
@@ -310,7 +310,7 @@ class Sam3Wrapper(nn.Module):
             .repeat(B).view(B * N, 1, 1).expand(-1, Q, 1)
         )
         detections = torch.cat([boxes_px, scores, cls_id], dim=-1)
-        detections = detections.reshape(B, N * Q, 6).half()  # [B, N_cls*Q, 6] fp16
+        detections = detections.reshape(B, N * Q, 6)  # [B, N_cls*Q, 6]
 
         if self.with_mask:
             return detections, masks  # [B, N_cls*Q, Hm, Wm] fp16
@@ -361,6 +361,32 @@ def encode_concepts(model, processor, classes):
         masks.append(inp["attention_mask"])
         print(f"  [+] '{cls}'  {tuple(out.pooler_output.shape)}")
     return torch.cat(embeds, dim=0), torch.cat(masks, dim=0)
+
+
+def onnx_to_fp16(fp32_path, fp16_path):
+    """TensorRT 11 is strongly typed: the engine precision is the ONNX dtype, so convert the graph (output stays fp32).
+    The converter runs without shape inference (it needs ~7 GB here) and then misses two things, patched below:
+    Cast(to=fp32) nodes inside the graph, and the cast of the fp32 input."""
+    import onnx
+    from onnx import helper, TensorProto
+    from onnxconverter_common import float16
+    t0 = time.perf_counter()
+    m = onnx.load(fp32_path)
+    m = float16.convert_float_to_float16(m, keep_io_types=True, disable_shape_infer=True)
+    g = m.graph
+    outs = {o.name for o in g.output}
+    for nd in g.node:
+        if nd.op_type == "Cast" and not (set(nd.output) & outs):
+            for a in nd.attribute:
+                if a.name == "to" and a.i == TensorProto.FLOAT:
+                    a.i = TensorProto.FLOAT16
+    for nd in g.node:
+        for k, i in enumerate(nd.input):
+            if i == "pixel_values" and nd.op_type != "Cast":
+                nd.input[k] = "pixel_values_fp16"
+    g.node.insert(0, helper.make_node("Cast", ["pixel_values"], ["pixel_values_fp16"], to=TensorProto.FLOAT16))
+    onnx.save(m, fp16_path)
+    print(f"[FP16] {fp16_path}  ({os.path.getsize(fp16_path)/1e6:.0f} MB, {time.perf_counter()-t0:.0f}s)")
 
 
 def run_trtexec(onnx_path, engine_path, imgsz, min_batch, opt_batch, max_batch):
@@ -456,7 +482,7 @@ def specialize_and_export(
     token = os.environ.get("HF_TOKEN")
     print(f"[Load] {checkpoint} ...")
     t0        = time.perf_counter()
-    model     = Sam3Model.from_pretrained(checkpoint, token=token, attn_implementation="eager").to(device).eval()   # eager: the ONNX symbolic of sdpa builds fp32 mask constants and breaks an fp16 graph
+    model     = Sam3Model.from_pretrained(checkpoint, token=token).to(device).eval()
     processor = Sam3Processor.from_pretrained(checkpoint, token=token)
     print(f"[Load] {time.perf_counter()-t0:.1f}s")
 
@@ -468,7 +494,7 @@ def specialize_and_export(
     print(f"[Build] Sam3Wrapper (with_mask={with_mask}) ...")
     wrapper = Sam3Wrapper(
         model, text_embeds, attn_masks, imgsz, with_mask=with_mask,
-    ).to(device).eval().half()   # TensorRT 11 is strongly typed: the engine precision is the ONNX dtype
+    ).to(device).eval()
 
     dummy = torch.randn(1, 3, imgsz, imgsz, device=device)
     print("[Check] Sanity forward pass ...")
@@ -516,6 +542,10 @@ def specialize_and_export(
         )
     size_mb = os.path.getsize(output_path) / 1e6
     print(f"[Export] Saved: {output_path}  ({size_mb:.0f} MB)")
+    del wrapper, model, out
+    gc.collect()
+    torch.cuda.empty_cache()
+    onnx_to_fp16(output_path, output_path)
 
     engine_path = output_path.replace(".onnx", ".engine")
     if not skip_trt:
