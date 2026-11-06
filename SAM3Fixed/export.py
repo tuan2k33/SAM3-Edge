@@ -268,6 +268,7 @@ class Sam3Wrapper(nn.Module):
 
     def forward(self, pixel_values: torch.Tensor):
         B = pixel_values.shape[0]
+        pixel_values = pixel_values.to(self.text_feat_all.dtype)
 
         if self.with_mask:
             fpn2, fpn_pos, fpn0, fpn1 = self.vision_enc(pixel_values)
@@ -367,7 +368,6 @@ def run_trtexec(onnx_path, engine_path, imgsz, min_batch, opt_batch, max_batch):
         "trtexec",
         f"--onnx={onnx_path}",
         f"--saveEngine={engine_path}",
-        "--fp16",
         f"--minShapes=pixel_values:{min_batch}x3x{imgsz}x{imgsz}",
         f"--optShapes=pixel_values:{opt_batch}x3x{imgsz}x{imgsz}",
         f"--maxShapes=pixel_values:{max_batch}x3x{imgsz}x{imgsz}",
@@ -456,7 +456,7 @@ def specialize_and_export(
     token = os.environ.get("HF_TOKEN")
     print(f"[Load] {checkpoint} ...")
     t0        = time.perf_counter()
-    model     = Sam3Model.from_pretrained(checkpoint, token=token).to(device).eval()
+    model     = Sam3Model.from_pretrained(checkpoint, token=token, attn_implementation="eager").to(device).eval()   # eager: the ONNX symbolic of sdpa builds fp32 mask constants and breaks an fp16 graph
     processor = Sam3Processor.from_pretrained(checkpoint, token=token)
     print(f"[Load] {time.perf_counter()-t0:.1f}s")
 
@@ -468,7 +468,7 @@ def specialize_and_export(
     print(f"[Build] Sam3Wrapper (with_mask={with_mask}) ...")
     wrapper = Sam3Wrapper(
         model, text_embeds, attn_masks, imgsz, with_mask=with_mask,
-    ).to(device).eval()
+    ).to(device).eval().half()   # TensorRT 11 is strongly typed: the engine precision is the ONNX dtype
 
     dummy = torch.randn(1, 3, imgsz, imgsz, device=device)
     print("[Check] Sanity forward pass ...")
