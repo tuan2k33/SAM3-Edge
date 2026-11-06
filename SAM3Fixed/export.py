@@ -364,27 +364,20 @@ def encode_concepts(model, processor, classes):
 
 
 def onnx_to_fp16(fp32_path, fp16_path):
-    """TensorRT 11 is strongly typed: the engine precision is the ONNX dtype, so convert the graph (output stays fp32).
-    The converter runs without shape inference (it needs ~7 GB here) and then misses two things, patched below:
-    Cast(to=fp32) nodes inside the graph, and the cast of the fp32 input."""
+    """TensorRT 11 is strongly typed: the engine precision is the ONNX dtype, so convert the graph, input and output included
+    (fp16 pixel_values in, fp16 detections out). The converter runs without shape inference (it needs ~7 GB here)
+    and then leaves Cast(to=fp32) nodes inside the graph, patched below."""
     import onnx
-    from onnx import helper, TensorProto
+    from onnx import TensorProto
     from onnxconverter_common import float16
     t0 = time.perf_counter()
     m = onnx.load(fp32_path)
-    m = float16.convert_float_to_float16(m, keep_io_types=True, disable_shape_infer=True)
-    g = m.graph
-    outs = {o.name for o in g.output}
-    for nd in g.node:
-        if nd.op_type == "Cast" and not (set(nd.output) & outs):
+    m = float16.convert_float_to_float16(m, keep_io_types=False, disable_shape_infer=True)
+    for nd in m.graph.node:
+        if nd.op_type == "Cast":
             for a in nd.attribute:
                 if a.name == "to" and a.i == TensorProto.FLOAT:
                     a.i = TensorProto.FLOAT16
-    for nd in g.node:
-        for k, i in enumerate(nd.input):
-            if i == "pixel_values" and nd.op_type != "Cast":
-                nd.input[k] = "pixel_values_fp16"
-    g.node.insert(0, helper.make_node("Cast", ["pixel_values"], ["pixel_values_fp16"], to=TensorProto.FLOAT16))
     onnx.save(m, fp16_path)
     print(f"[FP16] {fp16_path}  ({os.path.getsize(fp16_path)/1e6:.0f} MB, {time.perf_counter()-t0:.0f}s)")
 
