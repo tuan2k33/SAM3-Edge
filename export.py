@@ -8,7 +8,8 @@ so it holds for all of them, and every engine outputs detections AND masks.
   --mode open-text     the prompt is a runtime input: text_encoder + vision_decoder engines, built once, no re-export to change classes
                          (K = --k-max class slots per image; unused slots have an all-False text_mask and score 0)
                          -> weight/sam3_{imgsz}_open-text/{text_encoder,vision_decoder}.{onnx,engine}
-  --mode prompt-free   not implemented yet (planned: grid points through the SAM3 tracker, see CLAUDE.md)
+  --mode prompt-free   no text, no class: the SAM3 tracker segments everything from a grid of points (--grid-stride), batch 1, class-less (cls_id 0, score = predicted IoU)
+                         -> weight/sam3_{imgsz}_prompt-free/sam3.{onnx,engine}
 
 Outputs (fp16, pixels of the S x S input): detections [B,K*200,6] = x1 y1 x2 y2 score cls_id (cls_id = class slot), masks [B,K*200,36,36] probabilities.
 The row of query q of class slot k is k*200 + q.
@@ -25,6 +26,7 @@ import os
 import shlex
 import subprocess
 import time
+import types
 
 import torch
 import torch.nn as nn
@@ -282,6 +284,51 @@ class Sam3Wrapper(nn.Module):
         return self.core(pixel_values, self.text_feat_all.unsqueeze(0).expand(B, -1, -1, -1), self.text_mask_all.unsqueeze(0).expand(B, -1, -1))
 
 
+class PromptFreeWrapper(nn.Module):
+    """pixel_values [1,3,S,S] -> detections [1,P,6] (x1 y1 x2 y2 score cls_id = 0, pixels; box = the mask's extent, score = the tracker's predicted IoU)
+    + masks [1,P,36,36] probabilities. The SAM3 tracker segments everything: one point per `stride` patches goes through its prompt encoder and mask decoder
+    (P = (S/14/stride)^2 points, their prompt embeddings are constants), the best of its 3 masks is kept. No NMS: overlapping masks are for the consumer to suppress.
+    Batch 1: the mask decoder repeats the sparse prompts per image. The ViT is the detector's (shared in the checkpoint), the neck is the tracker's own."""
+
+    def __init__(self, tracker, device, imgsz, stride):
+        super().__init__()
+        self.S = imgsz
+        self.enc = _VisionEncoder(types.SimpleNamespace(vision_encoder=tracker.vision_encoder), device, imgsz)
+        md, pe = tracker.mask_decoder, tracker.prompt_encoder
+        self.conv_s0, self.conv_s1, self.mask_decoder = md.conv_s0, md.conv_s1, md
+        self.register_buffer("no_memory", tracker.no_memory_embedding.detach().view(1, -1, 1, 1))
+        G = imgsz // 14
+        pe.image_embedding_size, pe.input_image_size = (G, G), imgsz  # the prompt encoder was built for 1008
+        self.register_buffer("pos", tracker.get_image_wide_positional_embeddings().detach())
+        c = torch.arange(stride // 2, G, stride)
+        ys, xs = torch.meshgrid(c, c, indexing="ij")
+        pts = (torch.stack([xs, ys], -1).reshape(1, -1, 1, 2).float() * 14 + 6.5).to(device)  # the encoder adds the 0.5 of the pixel centre
+        with torch.no_grad():
+            sparse, dense = pe(input_points=pts, input_labels=torch.ones(1, pts.shape[1], 1, dtype=torch.int, device=device), input_boxes=None, input_masks=None)
+        self.register_buffer("sparse", sparse.detach()); self.register_buffer("dense", dense.detach())
+        self.register_buffer("scale", torch.tensor(float(imgsz)))
+
+    def forward(self, pixel_values):
+        fpn, _ = self.enc._encode(pixel_values)
+        masks, iou, _, _ = self.mask_decoder(
+            image_embeddings=fpn[2] + self.no_memory, image_positional_embeddings=self.pos, sparse_prompt_embeddings=self.sparse,
+            dense_prompt_embeddings=self.dense, multimask_output=True, high_resolution_features=[self.conv_s0(fpn[0]), self.conv_s1(fpn[1])])
+        best = iou.argmax(-1, keepdim=True)                                        # [1,P,1]
+        h, w = masks.shape[-2:]
+        m = masks.gather(2, best[..., None, None].expand(-1, -1, 1, h, w))[:, :, 0]   # [1,P,h,w] logits
+        score = iou.gather(2, best)[..., 0]
+        inside = m > 0
+        cols, rows = inside.any(2), inside.any(3)                                  # [1,P,w], [1,P,h]
+        ix, iy = torch.arange(w, device=m.device).float(), torch.arange(h, device=m.device).float()
+        big = float(max(h, w))
+        x1, x2 = torch.where(cols, ix, big).amin(-1), torch.where(cols, ix + 1, -1.0).amax(-1)
+        y1, y2 = torch.where(rows, iy, big).amin(-1), torch.where(rows, iy + 1, -1.0).amax(-1)
+        valid = cols.any(-1)
+        box = torch.stack([x1 / w, y1 / h, x2 / w, y2 / h], -1).clamp(0, 1) * self.scale
+        det = torch.cat([box, (score * valid)[..., None], torch.zeros_like(score)[..., None]], -1)
+        return det, F.interpolate(m.flatten(0, 1)[:, None], size=(MASK_SIZE, MASK_SIZE), mode="bilinear").sigmoid().view(1, -1, MASK_SIZE, MASK_SIZE)
+
+
 class TextEncoderWrapper(nn.Module):
     """Only holds text_encoder + text_projection (what get_text_features() actually calls) -- NOT a reference to the full sam3 model, otherwise
     ONNX export serializes the whole vision backbone as unused initializers (bloated the first attempt's text_encoder.onnx to 1.4GB)."""
@@ -421,7 +468,8 @@ def run_trtexec(onnx_path, engine_path, shapes, extra_args=()):
     """shapes: {input_name: (min, opt, max)}, each an 'AxBxC' string. TensorRT 11 is strongly typed: the precision is the ONNX dtype (see onnx_to_fp16)."""
     cmd = ["trtexec", f"--onnx={onnx_path}", f"--saveEngine={engine_path}"]
     for flag, idx in (("--minShapes", 0), ("--optShapes", 1), ("--maxShapes", 2)):
-        cmd.append(f"{flag}=" + ",".join(f"{n}:{v[idx]}" for n, v in shapes.items()))
+        if shapes:  # a static model (prompt-free) takes no explicit shapes
+            cmd.append(f"{flag}=" + ",".join(f"{n}:{v[idx]}" for n, v in shapes.items()))
     cmd += extra_args
     print(f"\n[TRT] {' '.join(cmd)}\n", flush=True)
     t0 = time.perf_counter()
@@ -536,7 +584,24 @@ def export_open_text(args):
 
 
 def export_prompt_free(args):
-    raise NotImplementedError("--mode prompt-free is planned (grid points through the SAM3 tracker, see CLAUDE.md); use set-classes or open-text")
+    from transformers.models.sam3_tracker import Sam3TrackerModel
+    out_dir = args.output_dir or os.path.join(ROOT, "weight", f"sam3_{args.imgsz}_prompt-free")
+    os.makedirs(out_dir, exist_ok=True)
+    onnx_path, engine_path = os.path.join(out_dir, "sam3.onnx"), os.path.join(out_dir, "sam3.engine")
+    print(f"[Load] {args.checkpoint} (tracker) ...")
+    tracker = Sam3TrackerModel.from_pretrained(args.checkpoint, token=os.environ.get("HF_TOKEN")).float().to(args.device).eval()  # the ViT and tracker_neck come from the same checkpoint
+    wrapper = PromptFreeWrapper(tracker, args.device, args.imgsz, args.grid_stride).to(args.device).eval()
+    dummy = torch.randn(1, 3, args.imgsz, args.imgsz, device=args.device)
+    with torch.no_grad():
+        detections, masks = wrapper(dummy)
+    print(f"[Check] detections {tuple(detections.shape)} masks {tuple(masks.shape)}; scores [{detections[0, :, 4].min():.3f}, {detections[0, :, 4].max():.3f}]")
+    export_onnx(wrapper, dummy, onnx_path, ["pixel_values"], ["detections", "masks"], None, args.opset)
+    del wrapper, tracker, detections, masks
+    free_memory()
+    onnx_to_fp16(onnx_path, onnx_path)
+    free_memory()
+    if not args.skip_trt:
+        run_trtexec(onnx_path, engine_path, {}, shlex.split(args.trt_args))
 
 
 def parse_args():
@@ -551,6 +616,7 @@ def parse_args():
     p.add_argument("--opt-batch", type=int, default=4, help="set-classes")
     p.add_argument("--max-batch", type=int, help="max batch = max cameras (default: 16 for set-classes, 4 for open-text)")
     p.add_argument("--k-max", type=int, default=5, help="open-text: class slots per camera baked into vision_decoder.engine; must match deepstream/sam3open_text.K_MAX")
+    p.add_argument("--grid-stride", type=int, default=2, help="prompt-free: one point every this many patches, in both directions (2 -> 225 points at 420)")
     p.add_argument("--skip-trt", action="store_true", help="only write the ONNX files")
     p.add_argument("--trt-args", default="", help='extra trtexec flags, e.g. "--memPoolSize=workspace:1536 --builderOptimizationLevel=1" on low-RAM machines')
     p.add_argument("--output-dir", help="default: weight/sam3_{imgsz}_{mode}[_{classes}]/")

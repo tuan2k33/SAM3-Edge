@@ -30,7 +30,7 @@ Export an engine (every mode writes detections and masks; the imgsz 71/72 grid f
 ```bash
 python3 export.py --mode set-classes --classes truck car --imgsz 420   # classes baked -> weight/sam3_420_set-classes_truck_car/
 python3 export.py --mode open-text --imgsz 420 --k-max 5               # prompt at runtime -> weight/sam3_420_open-text/ (once, ever)
-python3 export.py --mode prompt-free                                   # planned: raises NotImplementedError
+python3 export.py --mode prompt-free --imgsz 420                       # class-less: tracker masks from a grid of points, batch 1
 ```
 
 Run a DeepStream pipeline (DeepStream is not installed on the dev machine: these were not run after the move into `deepstream/`):
@@ -66,11 +66,11 @@ python3 bench_stages.py --imgsz 420 --batch 1 2 4
 
 **`--mode open-text`** — open-vocabulary: the prompt is encoded into a tensor at runtime instead of being baked in (a separate `text_encoder.engine` + `vision_decoder.engine`, built once, never re-exported). `deepstream/ds9_open_text.py` is a real, working camera pipeline: each camera gets a comma-separated class list (`prompt = car, truck`, up to `K_MAX=5` classes — baked into the engine by `export.py --k-max`, must match `sam3open_text.K_MAX`), and up to `MAX_SOURCES=4` cameras (matching the engine's max profile batch — `sam3open_text.py`) are scored in the SAME `nvinfer` forward pass, each against its own classes. Each class gets its own text embedding (slot k of the camera's row); the ViT runs once per image, the K_MAX slots ride the batch axis through the DETR decoder (decoder cost is paid for all K_MAX slots of every camera, used or not; unused slots have an all-False `text_mask` and score 0).
 
-**`--mode prompt-free`** — not implemented yet: the idea is a grid of points (one per ViT patch) through the SAM3 tracker (`tracker_model` / `tracker_neck` in the `facebook/sam3` checkpoint, which `Sam3Model` drops; `Sam3TrackerModel` has them), filtered by the tracker's IoU and object scores. The `export.py` mode exists so the three share one CLI.
+**`--mode prompt-free`** — no text and no class: a grid of points (`--grid-stride`, 2 -> one per 2x2 patches, 225 points at 420) goes through the SAM3 tracker (`tracker_model` / `tracker_neck` in the `facebook/sam3` checkpoint, which `Sam3Model` drops; `Sam3TrackerModel.from_pretrained` loads them with the renames built in, ViT included). One engine `sam3.engine`, batch 1 (static), the ViT is the detector's and the neck/prompt encoder/mask decoder are the tracker's (~12M). The prompt embeddings of the fixed points are constants; the best of the 3 masks per point is kept; box = the extent of its mask (120x120 logits), score = the tracker's predicted IoU, cls_id 0. The object score is useless here (always >> 0, no memory); filter on score (>= 0.7 keeps about half) and suppress overlapping masks on the host (`test/infer_prompt_free.py`). It segments stuff too (road, wall) and sometimes only a part of an object. 121 ms at batch 1 on the 3050 Ti (set-classes: 84 ms). Not wired to DeepStream; no golden yet.
 
 ### Engine contract (what a refactor must not change)
 
-Every mode (set-classes, open-text and the planned prompt-free) keeps the same I/O so the DeepStream side and the Python runtimes do not care which one built the engine:
+Every mode (set-classes, open-text and prompt-free) keeps the same I/O so the DeepStream side and the Python runtimes do not care which one built the engine:
 
 - **Input** `pixel_values` fp16 `[B,3,S,S]`, RGB, resized straight to S x S (no letterbox), `(x - 127.5) / 127.5` (nvinfer: `net-scale-factor=1/127.5`, `offsets=127.5`). S is square and a multiple of 14.
 - **Output** `detections` fp16 `[B,N,6]` = `x1 y1 x2 y2 score cls_id`, in pixels of the S x S input (the parser rescales). N = classes x 200 (set-classes) or K_MAX x 200 (open-text); `cls_id = i // 200` is the class slot. Boxes are clamped to the frame.

@@ -19,7 +19,7 @@ Real-time open-vocabulary detection and instance segmentation on multi-camera RT
 <summary><strong>2026-11-10</strong></summary>
 
 - **One folder less, one script less.** `SAM3Fixed/` and `SAM3Open/` are gone: a single `export.py` takes `--mode set-classes` (classes baked, the old Fixed),
-  `--mode open-text` (prompt supplied at runtime, the old Open) or `--mode prompt-free` (planned, not implemented yet) instead of the old `--mode det/seg`.
+  `--mode open-text` (prompt supplied at runtime, the old Open) or `--mode prompt-free` (no text, no class) instead of the old `--mode det/seg`.
   Every engine now outputs detections **and** masks (36x36 per object); the bbox-only `det` mode is removed. Engine folders: `weight/sam3_{imgsz}_set-classes_{classes}/`
   and `weight/sam3_{imgsz}_open-text/`.
 - The encoder/decoder modules and the imgsz 71/72 grid fix live once in `export.py` (applied at import, so it holds for every mode). One DeepStream plugin source
@@ -125,7 +125,7 @@ Real-time open-vocabulary detection and instance segmentation on multi-camera RT
 
 | | [`set-classes`](deepstream/GUIDE_set_classes.md) | [`open-text`](deepstream/GUIDE_open_text.md) | `prompt-free` |
 |---|---|---|---|
-| Prompt | Baked into the engine at export time | Free text, supplied at runtime | None: the model finds the objects itself (planned) |
+| Prompt | Baked into the engine at export time | Free text, supplied at runtime | None: the tracker segments everything from a grid of points (class-less, batch 1, not wired to DeepStream yet) |
 | Classes per camera | Multiple | Up to `K_MAX` (5) | all |
 | Changing the prompt | Re-export (or hot-swap to another already-built engine) | Just edit `config_open_text.txt`, no re-export ever | n/a |
 
@@ -138,7 +138,7 @@ Setup, config reference, and manual export/recompile steps for each are in their
 `export.py` builds the engines for every mode, `deepstream/` runs them: the pipelines, their configs, the tracker config and the custom `nvinfer` plugin. The encoder/decoder
 modules and the imgsz fix are shared (`export.py`). Engines go into the `weight/` folder at the repo root. Every engine outputs detections and masks.
 
-There are two ways to give SAM3 a prompt (a third, prompt-free, is planned):
+There are two ways to give SAM3 a prompt (a third, prompt-free, needs none: see CLAUDE.md):
 
 **`--mode set-classes`** — classes are baked into the graph at export time as ONNX
 constants. The resulting engine takes only an image as input and outputs
@@ -208,7 +208,7 @@ ever needed for a prompt change, unlike set-classes.
 
 ```
 SAM3-Edge/
-├── export.py                    # SAM3 → ONNX → TRT: --mode set-classes | open-text | prompt-free (planned); detections + masks, fp16
+├── export.py                    # SAM3 → ONNX → TRT: --mode set-classes | open-text | prompt-free; detections + masks, fp16
 ├── bench_stages.py              # per-stage throughput: decode fps, text encoder, vision decoder, baked engine
 ├── weight/                      # generated engines (not in git)
 │   ├── sam3_{imgsz}_set-classes_{classes}/   # onnx + engine + config_infer.txt + labels.txt
