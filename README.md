@@ -120,12 +120,11 @@ Setup, `config.txt` reference, and manual export/recompile steps for each are in
 
 ## How it works
 
-`SAM3Fixed/` and `SAM3Open/` are two fully self-contained folders, one per
-architecture: each has its own export script, custom `nvinfer` plugin, and
-DeepStream pipeline script(s) + `config.txt`. Both write their generated
-engines into a shared `weight/` folder at the repo root instead of next to
-themselves. `SAM3Open/export.py` carries its own copy of the encoder/decoder
-modules and the imgsz fixes (keep it in sync with `SAM3Fixed/export.py`).
+`SAM3Fixed/` and `SAM3Open/` are one folder per architecture: each has its own
+export script and DeepStream pipeline script(s) + `config.txt`. The encoder/decoder
+modules and the imgsz fix are shared (`sam3_common.py`), and so is the custom
+`nvinfer` plugin (`deepstream/`). Both write their generated engines into a shared
+`weight/` folder at the repo root instead of next to themselves.
 
 There are two ways to give SAM3 a prompt:
 
@@ -197,6 +196,7 @@ ever needed for a prompt change, unlike SAM3Fixed.
 
 ```
 SAM3-Edge/
+├── sam3_common.py               # the SAM3 modules both export scripts trace + the imgsz != 1008 fix
 ├── export.py                    # unified export dispatcher: --prompt <classes> → SAM3Fixed/export.py
 │                                # no --prompt → SAM3Open/export.py
 ├── bench_stages.py              # per-stage throughput: decode fps, text encoder, vision decoder, baked engine

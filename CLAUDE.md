@@ -61,7 +61,7 @@ python3 bench_stages.py --imgsz 420 --batch 1 2 4
 
 ### Two self-contained folders, one shared weight/ folder
 
-`SAM3Fixed/` and `SAM3Open/` each hold their own export script and DeepStream pipeline script(s) + `config.txt`; the custom `nvinfer` plugin (`deepstream/nvdsparsebbox_sam3.cpp` → `libnvdsinfer_sam3.so`, one for both) is shared. Nothing about one architecture reaches into the other: `SAM3Open/export.py` carries its own copy of `_VisionEncoder`/`_Decoder` and the imgsz fixes (keep in sync with `SAM3Fixed/export.py`). Both write their generated engines into the shared `weight/` folder at the repo root (`weight/sam3_{imgsz}_{mode}_{classes}/` for Fixed, `weight/sam3_{imgsz}_open/` for Open) rather than next to themselves.
+`SAM3Fixed/` and `SAM3Open/` each hold their own export script and DeepStream pipeline script(s) + `config.txt`; the custom `nvinfer` plugin (`deepstream/nvdsparsebbox_sam3.cpp` → `libnvdsinfer_sam3.so`, one for both) is shared. Nothing about one architecture reaches into the other: both export scripts import the encoder/decoder modules and the imgsz fix from `sam3_common.py` at the repo root (one copy). Both write their generated engines into the shared `weight/` folder at the repo root (`weight/sam3_{imgsz}_{mode}_{classes}/` for Fixed, `weight/sam3_{imgsz}_open/` for Open) rather than next to themselves.
 
 ### Two ways to give SAM3 a prompt
 
@@ -109,7 +109,7 @@ row *b* slot *k* = camera *b*'s k-th class encoding (from `text_encoder.engine`,
 
 ### The imgsz != 1008 box-accuracy fix
 
-The checkpoint was only trained at imgsz 1008 (H = 72 cells of 14 px). At other `imgsz` the boxes shrink toward the top-left corner (width ~ -10% at 420), smoothly in H. Both `SAM3Fixed/export.py` and `SAM3Open/export.py` (self-contained, keep the two blocks in sync) patch `Sam3DetrDecoder._get_coords` at **module import time**, baked into every exported engine (no flag): `arange(0,H)/(H-1) * 71/72` (`_TRAIN_GRID = 72`). This fixes the box *centre*, is the identity at H = 72, and the original grid `arange/H` is only a convention.
+The checkpoint was only trained at imgsz 1008 (H = 72 cells of 14 px). At other `imgsz` the boxes shrink toward the top-left corner (width ~ -10% at 420), smoothly in H. `sam3_common.py` (imported by both `SAM3Fixed/export.py` and `SAM3Open/export.py`) patches `Sam3DetrDecoder._get_coords` at **module import time**, baked into every exported engine (no flag): `arange(0,H)/(H-1) * 71/72` (`_TRAIN_GRID = 72`). This fixes the box *centre*, is the identity at H = 72, and the original grid `arange/H` is only a convention.
 
 The box *size* is not fixed by it. A query-box scale (`Sam3SinePositionEmbedding.encode_boxes` on `box * (H/72)`, "sineq") fixes it empirically (width -10.4% -> -1.8% at 420) but is **not shipped** while its mechanism and exponent are researched; it lives only in `test/` (`collect_box_pairs.py` variant `sineq`, `compare_bus.py`). Engines built before this change may still carry it. Rejected: letting the grid end at 1.0, content resolution, window padding, encoder RoPE/abs-pos. Full evidence: `test/BOX_SHRINK_INVESTIGATION.md`.
 
