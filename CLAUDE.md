@@ -71,6 +71,15 @@ python3 bench_stages.py --imgsz 420 --batch 1 2 4
 
 `export.py` at the repo root is a thin dispatcher over both: `--prompt <classes>` calls `SAM3Fixed/export.py`; no `--prompt` calls `SAM3Open/export.py`.
 
+### Engine contract (what a refactor must not change)
+
+Every mode (Fixed, Open, and the planned prompt-free) keeps the same I/O so the DeepStream side and the Python runtimes do not care which one built the engine:
+
+- **Input** `pixel_values` fp16 `[B,3,S,S]`, RGB, resized straight to S x S (no letterbox), `(x - 127.5) / 127.5` (nvinfer: `net-scale-factor=1/127.5`, `offsets=127.5`). S is square and a multiple of 14.
+- **Output** `detections` fp16 `[B,N,6]` = `x1 y1 x2 y2 score cls_id`, in pixels of the S x S input (the parser rescales). N = classes x 200 (Fixed) or K_MAX x 200 (Open); `cls_id = i // 200` is the class slot.
+- **Output (optional)** `masks` fp16 `[B,N,Hm,Wm]`, probabilities in [0,1], row i belongs to `detections` row i (`--mode seg`, currently 36 x 36).
+- **Check** a rebuilt engine against the saved one: `python test/golden.py check weight/<new>/sam3.engine 420 test/golden/person_420.npz` (bus.jpg + 8 coco128 images, class `person`; exit 1 if a golden box with score >= 0.5 is lost, moves (IoU < 0.9) or its score drifts by > 0.05). `save` writes a new golden from an engine you trust.
+
 ### `export.py`'s export pattern (SAM3Fixed)
 
 SAM3 is decomposed into ONNX-traceable submodules (`_VisionEncoder`/`_VisionEncoderFull`, `_Decoder`/`_DecoderFull`) rather than exporting the HuggingFace model directly, because the stock model hard-fails at any resolution other than 1008 (missing dynamic RoPE/position-embedding resize logic). `_VisionEncoder.__init__` rebuilds each ViT layer's `rotary_emb` for the target `Hp,Wp` and re-tiles the absolute position embedding before tracing — this is what makes `--imgsz` other than 1008 possible at all (must still be a multiple of `patch_size`, square). `SAM3Open/export.py` has the same modules (a copy) and takes `--imgsz` too (default 1008; 420 verified end-to-end on 2 cameras). `SAM3Open/config.txt` `[model] imgsz` must match the engines' export size.
@@ -110,6 +119,7 @@ Research scripts, not part of the pipelines; all run PyTorch eager FP16 on coco1
 
 - Box shrink: `BOX_SHRINK_INVESTIGATION.md` (final fix + ground-truth evidence; read before touching the `_get_coords` patch), `collect_box_pairs.py` (`--variants` selects decoder/encoder patches incl. `sineq`, `wbias_*` bias edits; `--checkpoint` takes a local dir such as `weight/hf_sam3.1`), `analyze_box_pairs.py`, `eval_engine_person.py`, raw output in `results_pairs*/`, `compare_bus.py` / `infer_engine_bus.py` (before/after images on `bus.jpg`).
 - Sub-block pruning: `PRUNING_SUMMARY.md` only (scripts removed). Conclusion: ~24/106 sub-blocks can be zeroed with no loss, but the speedup is only 9-15% vs 2.9x from imgsz 1008 -> 420, so it is not shipped and not being pursued.
+- `golden.py` + `golden/`: saved detections of the `person` @420 engine for refactor checks (see Engine contract).
 - Other probes: `floor_imgsz.py`, `grid_shapes.py`, `tiny_imgsz.py` (non-multiple-of-14 and tiny imgsz), `generic_prompts.py`, `query_text_space.py`.
 
 ### DeepStream pipeline gotchas (measured on this hardware — RTX 50-series, driver 610.x, DS 9.1)
