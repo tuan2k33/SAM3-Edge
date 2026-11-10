@@ -2,7 +2,7 @@
 
 Real-time open-vocabulary detection and instance segmentation on multi-camera RTSP streams using [SAM3](https://github.com/facebookresearch/sam3) and NVIDIA DeepStream 9.
 
-**Workflow:** `python3 export.py --mode set-classes|open-text ...` → write `deepstream/config_set_classes.txt` or `deepstream/config_open_text.txt` → run `deepstream/ds9_set_classes.py` or `deepstream/ds9_open_text.py` → saves annotated mp4. Setup steps live in [deepstream/GUIDE_set_classes.md](deepstream/GUIDE_set_classes.md) and [deepstream/GUIDE_open_text.md](deepstream/GUIDE_open_text.md).
+**Workflow:** `python3 export.py --mode set-classes|open-text|prompt-free ...` → write `deepstream/config_set_classes.txt` or `deepstream/config_open_text.txt` → run `deepstream/ds9_set_classes.py` or `deepstream/ds9_open_text.py` → saves annotated mp4. Setup steps live in [deepstream/GUIDE_set_classes.md](deepstream/GUIDE_set_classes.md) and [deepstream/GUIDE_open_text.md](deepstream/GUIDE_open_text.md).
 
 ---
 
@@ -26,7 +26,9 @@ Real-time open-vocabulary detection and instance segmentation on multi-camera RT
   (`deepstream/nvdsparsebbox_sam3.cpp`, C++20). All DeepStream files (pipelines, configs, tracker yml, `spec_cache.py`, `sam3open_text.py`, guides) are in `deepstream/`.
 - `open-text` engines are now fp16 in and out like `set-classes` (TensorRT 11 has no `--fp16`); `sam3open_text.py` writes fp16 text features. Boxes are clamped to the frame in
   both modes (the grid fix can push edge boxes past it; `open-text` used not to clamp).
-- Not run here: the DeepStream pipelines (DeepStream is not installed on this machine) and the `open-text` export end to end. The forward passes were checked against the old scripts.
+- **`--mode prompt-free`** (new): no text, no class. A grid of points goes through the SAM3 tracker (its weights are in `facebook/sam3` but `Sam3Model` drops them; `Sam3TrackerModel` loads them) and returns every region it can segment, objects and stuff alike, like SAM2's automatic mask generator. The engine output is raw: `test/infer_prompt_free.py` has the host post-process (min mask area 0.3% of the frame, NMS by mask IoU with the largest mask first, drop masks inside a kept one). Honest numbers on COCO val2017 (`test/eval_prompt_free.py`): the engine built at imgsz 420 finds 27% of the ground-truth instances (IoU >= 0.5; person 15%, medium objects 50%) with 27 masks per image. An eager study at imgsz 700, 24x24 points and all 3 masks per point reaches about 62%, but the engine does not do that yet (details in CLAUDE.md). Not wired to DeepStream.
+- Every engine build now reuses `weight/timing.cache` (`--timingCacheFile`): rebuilding the same ONNX went from 159 s to 30 s.
+- Checked here: the PyTorch forwards of `set-classes` and `open-text` are bit-identical to the old scripts, a rebuilt `set-classes` engine passes `test/golden.py`, and `open-text` builds both engines on TensorRT 11.4. Not run here: the DeepStream pipelines.
 
 </details>
 
@@ -126,7 +128,7 @@ Real-time open-vocabulary detection and instance segmentation on multi-camera RT
 | | [`set-classes`](deepstream/GUIDE_set_classes.md) | [`open-text`](deepstream/GUIDE_open_text.md) | `prompt-free` |
 |---|---|---|---|
 | Prompt | Baked into the engine at export time | Free text, supplied at runtime | None: the tracker segments everything from a grid of points (class-less, batch 1, not wired to DeepStream yet) |
-| Classes per camera | Multiple | Up to `K_MAX` (5) | all |
+| Classes per camera | Multiple | Up to `K_MAX` (5) | none: class-less masks (`cls_id` 0) |
 | Changing the prompt | Re-export (or hot-swap to another already-built engine) | Just edit `config_open_text.txt`, no re-export ever | n/a |
 
 Setup, config reference, and manual export/recompile steps for each are in their own guide: **[deepstream/GUIDE_set_classes.md](deepstream/GUIDE_set_classes.md)** and **[deepstream/GUIDE_open_text.md](deepstream/GUIDE_open_text.md)**.
@@ -138,7 +140,7 @@ Setup, config reference, and manual export/recompile steps for each are in their
 `export.py` builds the engines for every mode, `deepstream/` runs them: the pipelines, their configs, the tracker config and the custom `nvinfer` plugin. The encoder/decoder
 modules and the imgsz fix are shared (`export.py`). Engines go into the `weight/` folder at the repo root. Every engine outputs detections and masks.
 
-There are two ways to give SAM3 a prompt (a third, prompt-free, needs none: see CLAUDE.md):
+There are two ways to give SAM3 a prompt, and a third mode that needs none (described after them):
 
 **`--mode set-classes`** — classes are baked into the graph at export time as ONNX
 constants. The resulting engine takes only an image as input and outputs
@@ -202,6 +204,8 @@ A prompt change only needs a snapshot rewrite + `nvinfer.set({"config-file-path"
 *same* config path re-reads the snapshot files. No TensorRT engine rebuild is
 ever needed for a prompt change, unlike set-classes.
 
+**`--mode prompt-free`** — the SAM3 tracker (the SAM2-style point-prompt mask decoder inside the checkpoint) gets one point prompt per grid cell (`--grid-stride`, 225 points at imgsz 420), keeps the best of its 3 masks per point and returns them with a box (the mask's extent) and the tracker's predicted IoU. One batch-1 engine, no text, no DeepStream plugin yet. Nothing says which masks are objects and which are background, so post-process on the host (`test/infer_prompt_free.py`). Filtering on score does not work (the predicted IoU favours parts over whole objects); on a static camera, keeping only the masks that overlap motion removes the background. See CLAUDE.md for the measurements.
+
 ---
 
 ## File structure
@@ -212,7 +216,9 @@ SAM3-Edge/
 ├── bench_stages.py              # per-stage throughput: decode fps, text encoder, vision decoder, baked engine
 ├── weight/                      # generated engines (not in git)
 │   ├── sam3_{imgsz}_set-classes_{classes}/   # onnx + engine + config_infer.txt + labels.txt
-│   └── sam3_{imgsz}_open-text/               # text_encoder + vision_decoder, onnx + engine
+│   ├── sam3_{imgsz}_open-text/               # text_encoder + vision_decoder, onnx + engine
+│   ├── sam3_{imgsz}_prompt-free/             # sam3.onnx + sam3.engine, batch 1
+│   └── timing.cache                          # TensorRT timing cache shared by every build
 ├── deepstream/                  # everything that runs the engines in DeepStream (not testable without DeepStream)
 │   ├── nvdsparsebbox_sam3.cpp   # the one nvinfer plugin: output parsers + the open-text input injector (build to libnvdsinfer_sam3.so, not in git)
 │   ├── test/                    # parser unit test, no DeepStream needed
@@ -224,7 +230,7 @@ SAM3-Edge/
 │   ├── config_tracker_NvSORT_i5.yml
 │   ├── GUIDE_set_classes.md, GUIDE_open_text.md
 │   └── output/                  # annotated mp4 outputs
-└── test/                        # box-accuracy investigation + golden.py (refactor check): scripts, raw pairs, evidence
+└── test/                        # box-accuracy investigation, golden.py (refactor check), infer_prompt_free.py + eval_prompt_free.py (prompt-free post-process and COCO recall)
 ```
 
 ---

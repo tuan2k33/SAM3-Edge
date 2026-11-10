@@ -51,6 +51,12 @@ The parser logic has a unit test that needs no DeepStream (a fake header stands 
 
 There is no automated test suite. Refactors of `export.py` are checked by comparing the PyTorch forward of the old and new code on the same weights (bit-identical), then `test/golden.py check` on a rebuilt engine (see Engine contract). The pipeline scripts in `deepstream/` are the verification path for the DeepStream side (real or fake-RTSP sources, check the detections/output video).
 
+Prompt-free: run an engine on one image and measure COCO recall (the post-process is `test/infer_prompt_free.py: postprocess`):
+```bash
+python3 test/infer_prompt_free.py weight/sam3_420_prompt-free/sam3.engine 420 test/bus.jpg out.jpg [--min-area 0.003] [--max-area 1.0]
+cd test && python3 eval_prompt_free.py ../weight/sam3_420_prompt-free/sam3.engine 420 200   # needs data/coco (images.cocodataset.org)
+```
+
 Per-stage throughput (decode fps, text encoder, vision decoder, baked engine), from the repo root:
 ```bash
 python3 bench_stages.py --imgsz 420 --batch 1 2 4
@@ -60,7 +66,7 @@ python3 bench_stages.py --imgsz 420 --batch 1 2 4
 
 ### One export script, a deepstream/ folder, one shared weight/ folder
 
-`export.py` builds every engine and holds the SAM3 modules it traces (vision encoder, DETR encoder/decoder) and applies the imgsz != 1008 grid fix at import, so the fix holds for every mode. `deepstream/` holds everything that runs the engines: the two pipelines (`ds9_set_classes.py`, `ds9_open_text.py`), `spec_cache.py`, `sam3open_text.py`, the configs (`config_set_classes.txt`, `config_open_text.txt`, `config_tracker_NvSORT_i5.yml`), the guides and the custom `nvinfer` plugin (`nvdsparsebbox_sam3.cpp` → `libnvdsinfer_sam3.so`, one for every mode). Generated engines go into `weight/` at the repo root: `weight/sam3_{imgsz}_set-classes_{classes}/` and `weight/sam3_{imgsz}_open-text/`.
+`export.py` builds every engine and holds the SAM3 modules it traces (vision encoder, DETR encoder/decoder) and applies the imgsz != 1008 grid fix at import, so the fix holds for every mode. `deepstream/` holds everything that runs the engines: the two pipelines (`ds9_set_classes.py`, `ds9_open_text.py`), `spec_cache.py`, `sam3open_text.py`, the configs (`config_set_classes.txt`, `config_open_text.txt`, `config_tracker_NvSORT_i5.yml`), the guides and the custom `nvinfer` plugin (`nvdsparsebbox_sam3.cpp` → `libnvdsinfer_sam3.so`, one for every mode). Generated engines go into `weight/` at the repo root: `weight/sam3_{imgsz}_set-classes_{classes}/`, `weight/sam3_{imgsz}_open-text/` and `weight/sam3_{imgsz}_prompt-free/` (plus `weight/timing.cache`).
 
 ### Three ways to give SAM3 a prompt
 
@@ -124,6 +130,7 @@ Research scripts, not part of the pipelines; all run PyTorch eager FP16 on coco1
 - Box shrink: `BOX_SHRINK_INVESTIGATION.md` (final fix + ground-truth evidence; read before touching the `_get_coords` patch), `collect_box_pairs.py` (`--variants` selects decoder/encoder patches incl. `sineq`, `wbias_*` bias edits; `--checkpoint` takes a local dir such as `weight/hf_sam3.1`), `analyze_box_pairs.py`, `eval_engine_person.py`, raw output in `results_pairs*/`, `compare_bus.py` / `infer_engine_bus.py` (before/after images on `bus.jpg`).
 - Sub-block pruning: `PRUNING_SUMMARY.md` only (scripts removed). Conclusion: ~24/106 sub-blocks can be zeroed with no loss, but the speedup is only 9-15% vs 2.9x from imgsz 1008 -> 420, so it is not shipped and not being pursued.
 - `golden.py` + `golden/`: saved detections of the `person` @420 engine for refactor checks (see Engine contract).
+- Prompt-free: `infer_prompt_free.py` (`Engine`, `postprocess`, draw one image) and `eval_prompt_free.py` (recall on COCO val2017, before and after the post-process). `generic_prompts.py` showed that class-agnostic text prompts ("object", "thing", ...) do not work with the detector (best: recall 0.21-0.42 vs 0.90 when the prompt is the true class names, `generic_prompts.log`), which is why prompt-free uses the tracker.
 - Other probes: `floor_imgsz.py`, `grid_shapes.py`, `tiny_imgsz.py` (non-multiple-of-14 and tiny imgsz), `generic_prompts.py`, `query_text_space.py`.
 
 ### DeepStream pipeline gotchas (measured on this hardware — RTX 50-series, driver 610.x, DS 9.1)
