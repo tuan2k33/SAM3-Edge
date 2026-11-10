@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Production DeepStream 9 RTSP pipeline for the SAM3Open (dynamic-prompt)
+Production DeepStream 9 RTSP pipeline for the open-text (dynamic-prompt)
 architecture -- each camera gets its own comma-separated class list, ONE
 shared nvinfer element (vision_decoder.engine) scores every camera's frame
 against its own classes in the SAME batched forward pass: each class is
@@ -11,15 +11,15 @@ slots ride the batch axis through the DETR decoder; detections carry the
 slot index as cls_id. No engine rebuild when a prompt changes.
 
 Prompts are hot-reloadable: edit config.txt while running and the pipeline
-re-encodes any new prompt (../weight/sam3_{imgsz}_open/text_encoder.engine,
+re-encodes any new prompt (../weight/sam3_{imgsz}_open-text/text_encoder.engine,
 via sam3open_text.py), rewrites the snapshot files, and reloads nvinfer's
 context via config-file-path set() (SAME path -- this re-triggers
 NvDsInferInitializeInputLayers, verified empirically) -- no GStreamer
-restart, and unlike SAM3Fixed's hot-reload, no TensorRT engine rebuild at
+restart, and unlike the set-classes hot-reload, no TensorRT engine rebuild at
 all, since the engine itself never changes.
 
 Limit: at most K_MAX classes per camera (sam3open_text.K_MAX, baked into the
-engine at export time via export.py --k-max); decoder cost is paid for all
+engine at export time via export.py --mode open-text --k-max); decoder cost is paid for all
 K_MAX slots of every camera whether used or not.
 
 Reads all settings from config.txt (or $DS_CONFIG override):
@@ -30,7 +30,7 @@ Reads all settings from config.txt (or $DS_CONFIG override):
   [pipeline] width, height, infer_interval, run_seconds, output_file
 
 Usage:
-    CUDA_VISIBLE_DEVICES=1 python3 ds9_rtsp.py
+    CUDA_VISIBLE_DEVICES=1 python3 ds9_open_text.py
 """
 
 import configparser
@@ -51,7 +51,7 @@ from pyservicemaker import Pipeline, BatchMetadataOperator, Probe
 import sam3open_text
 
 TRACKER_LIB = "/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so"
-CONFIG_PATH = Path(os.environ.get("DS_CONFIG", str(_HERE / "config.txt")))
+CONFIG_PATH = Path(os.environ.get("DS_CONFIG", str(_HERE / "config_open_text.txt")))
 
 
 def _config_imgsz():
@@ -61,9 +61,9 @@ def _config_imgsz():
 
 
 IMGSZ = _config_imgsz()  # must match the imgsz vision_decoder.engine was exported with (read once at startup)
-OPEN_DIR = sam3open_text.open_dir_for(IMGSZ)  # ../weight/sam3_{imgsz}_open/
+OPEN_DIR = sam3open_text.open_dir_for(IMGSZ)  # ../weight/sam3_{imgsz}_open-text/
 VISION_ENGINE = os.path.join(OPEN_DIR, "vision_decoder.engine")
-LIB_PATH = str(_HERE.parent / "deepstream" / "libnvdsinfer_sam3.so")  # shared plugin, see CLAUDE.md to build it
+LIB_PATH = str(_HERE / "libnvdsinfer_sam3.so")  # built from nvdsparsebbox_sam3.cpp, see CLAUDE.md
 INFER_CONFIG_PATH = os.path.join(OPEN_DIR, "config_infer.txt")
 
 
@@ -110,7 +110,7 @@ def read_config():
 
 
 def write_infer_config(batch_size, conf):
-    """Static config for vision_decoder.engine -- unlike SAM3Fixed there's no
+    """Static config for vision_decoder.engine -- unlike set-classes there's no
     per-run class baking, so this is regenerated fresh each run (not just
     patched) but its content never changes except batch-size/threshold."""
     os.makedirs(os.path.dirname(INFER_CONFIG_PATH), exist_ok=True)
@@ -128,17 +128,18 @@ model-color-format=0
 
 network-mode=1
 process-mode=1
-network-type=0
+network-type=3
+segmentation-threshold=0.5
 infer-dims=3;{IMGSZ};{IMGSZ}
 
 cluster-mode=4
 gie-unique-id=2
 
-# detections [K_MAX*200,6] float32  x1 y1 x2 y2 score cls_id (pixel units;
-# cls_id = the camera's class slot, see nvdsparsebbox_sam3.cpp)
-output-blob-names=detections
+# detections [K_MAX*200,6] fp16  x1 y1 x2 y2 score cls_id (pixel units;
+# cls_id = the camera's class slot, see nvdsparsebbox_sam3.cpp)  masks [K_MAX*200,36,36] fp16
+output-blob-names=detections;masks
 
-parse-bbox-func-name=NvDsInferParseSam3OpenDet
+parse-bbox-instance-mask-func-name=NvDsInferParseSAM3Full
 custom-lib-path={LIB_PATH}
 
 [class-attrs-all]
@@ -242,10 +243,10 @@ def build_pipeline(sources, width, height, infer_interval, infer_config, lbl, ou
 
     p.add("nvvideoconvert", "conv1", {})
     p.link("tiler", "conv1")
-    p.add("nvdsosd", "osd", {"process-mode": 0, "display-text": True})
+    p.add("nvdsosd", "osd", {"process-mode": 0, "display-text": True, "display-mask": True})
     p.link("conv1", "osd")
 
-    # Same encoder gotchas as SAM3Fixed/ds9_rtsp.py -- see CLAUDE.md.
+    # Same encoder gotchas as ds9_set_classes.py -- see CLAUDE.md.
     p.add("nvvideoconvert", "conv2", {})
     p.link("osd", "conv2")
     p.add("capsfilter", "caps_sys", {"caps": "video/x-raw(memory:NVMM),format=NV12"})

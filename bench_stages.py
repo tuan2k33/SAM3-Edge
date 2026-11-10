@@ -2,14 +2,14 @@
 """
 Measure per-stage throughput:
   1. decode fps   : NVDEC via nvurisrcbin, counting buffers/sec before nvinfer (real pipeline)
-  2. text encode  : weight/sam3_1008_open/text_encoder.engine, dynamic-prompt architecture (not baked)
-  3. vision decode: weight/sam3_1008_open/vision_decoder.engine, dynamic-prompt architecture
-  4. baked engine : SAM3Fixed/sam3_{imgsz}_det_*/sam3.engine (vision+decoder combined, used by ds9_rtsp.py)
+  2. text encode  : weight/sam3_{imgsz}_open-text/text_encoder.engine, open-text mode (not baked)
+  3. vision decode: weight/sam3_{imgsz}_open-text/vision_decoder.engine, open-text mode
+  4. baked engine : weight/sam3_{imgsz}_set-classes_car_truck/sam3.engine (vision+decoder combined, used by deepstream/ds9_set_classes.py)
 
-(2)+(3) do NOT apply to SAM3Fixed/ds9_rtsp.py (SAM3Fixed) -- that pipeline
+(2)+(3) do NOT apply to deepstream/ds9_set_classes.py (set-classes) -- that pipeline
 uses the pre-baked engine (4); the text encoder only runs once at build time
 and is not in the runtime data path. (2)+(3) ARE both in the runtime data
-path for SAM3Open/ds9_rtsp.py (SAM3Open): (3) runs inside nvinfer
+path for deepstream/ds9_open_text.py (open-text): (3) runs inside nvinfer
 every inferred frame, (2) runs in Python only when a prompt changes.
 
 Usage: python3 bench_stages.py [--imgsz 420] [--batch 1 2 4]
@@ -116,24 +116,24 @@ def main():
         except Exception as e:
             print(f"  ERROR: {e}  (needs a running RTSP source -- fake-stream one with mediamtx + ffmpeg)")
 
-    print(f"\n{'='*70}\n2) TEXT ENCODER (weight/sam3_1008_open/text_encoder.engine) -- dynamic-prompt architecture\n{'='*70}")
+    print(f"\n{'='*70}\n2) TEXT ENCODER (weight/sam3_{args.imgsz}_open-text/text_encoder.engine) -- open-text mode\n{'='*70}")
     for b in args.batch:
         try:
-            ms, ms_per, fps = bench_engine("weight/sam3_1008_open/text_encoder.engine", b)
+            ms, ms_per, fps = bench_engine(f"weight/sam3_{args.imgsz}_open-text/text_encoder.engine", b)
             print(f"  batch={b:<3d} {ms:8.3f} ms/batch  {ms_per:7.3f} ms/prompt  {fps:8.1f} prompt/s")
         except Exception as e:
             print(f"  batch={b}: ERROR {e}")
 
-    print(f"\n{'='*70}\n3) VISION DECODER (weight/sam3_1008_open/vision_decoder.engine) -- dynamic-prompt architecture\n{'='*70}")
+    print(f"\n{'='*70}\n3) VISION DECODER (weight/sam3_{args.imgsz}_open-text/vision_decoder.engine) -- open-text mode\n{'='*70}")
     for b in args.batch:
         try:
-            ms, ms_per, fps = bench_engine("weight/sam3_1008_open/vision_decoder.engine", b)
+            ms, ms_per, fps = bench_engine(f"weight/sam3_{args.imgsz}_open-text/vision_decoder.engine", b)
             print(f"  batch={b:<3d} {ms:8.3f} ms/batch  {ms_per:7.3f} ms/img  {fps:8.1f} img/s")
         except Exception as e:
             print(f"  batch={b}: ERROR {e}")
 
-    baked = f"weight/sam3_{args.imgsz}_det_car_truck/sam3.engine"
-    print(f"\n{'='*70}\n4) BAKED ENGINE ({baked}) -- SAM3Fixed/ds9_rtsp.py architecture\n{'='*70}")
+    baked = f"weight/sam3_{args.imgsz}_set-classes_car_truck/sam3.engine"
+    print(f"\n{'='*70}\n4) BAKED ENGINE ({baked}) -- deepstream/ds9_set_classes.py (set-classes)\n{'='*70}")
     for b in args.batch:
         try:
             ms, ms_per, fps = bench_engine(baked, b)

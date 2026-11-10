@@ -10,10 +10,9 @@ import argparse, collections, glob, importlib.util, os, sys
 import cv2, numpy as np, torch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "SAM3Fixed"))
+sys.path.insert(0, os.path.join(HERE, ".."))
 import export as E
-_sp = importlib.util.spec_from_file_location("open_export", os.path.join(HERE, "..", "SAM3Open", "export.py"))
-OE = importlib.util.module_from_spec(_sp); _sp.loader.exec_module(OE)
+OE = E   # export.py holds the set-classes and the text-as-input wrappers
 from transformers.models.sam3 import Sam3Model, Sam3Processor
 from transformers.models.sam3.modeling_sam3 import Sam3DetrDecoder
 
@@ -87,7 +86,7 @@ for S in args.sizes:
         for tag, grid in (("before", orig_grid), ("shipped", SHIPPED)):
             Sam3DetrDecoder._get_coords = grid
             with torch.no_grad():
-                d = w(x, TE[ids].unsqueeze(0), AM[ids].unsqueeze(0))[0].float().cpu().numpy()
+                d = w(x, TE[ids].unsqueeze(0), AM[ids].unsqueeze(0))[0][0].float().cpu().numpy()
             d[:, [0, 2]] *= w0 / S; d[:, [1, 3]] *= h0 / S
             preds[tag] = [nms(d[(d[:, 5] == i) & (d[:, 4] >= 0.5) & (d[:, 2] > d[:, 0]) & (d[:, 3] > d[:, 1])]) for i in range(len(ids))]
         vis = img.copy(); t = max(2, round(max(h0, w0) / 400))

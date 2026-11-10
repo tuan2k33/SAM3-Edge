@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Real-time open-vocabulary detection and instance segmentation on multi-camera RTSP streams using [SAM3](https://github.com/facebookresearch/sam3) and NVIDIA DeepStream 9. Two independent, self-contained architectures for getting a prompt into SAM3 live side by side as top-level folders — `SAM3Fixed/` (classes baked at export time) and `SAM3Open/` (open-vocabulary, prompt supplied at runtime). Each folder holds the export script and the DeepStream pipeline script(s) + configs for that architecture; the custom `nvinfer` plugin is one shared source in `deepstream/`. Generated engines from both go into a shared `weight/` folder at the repo root.
+Real-time open-vocabulary detection and instance segmentation on multi-camera RTSP streams using [SAM3](https://github.com/facebookresearch/sam3) and NVIDIA DeepStream 9. One export script (`export.py`) with three modes for getting a prompt into SAM3 -- `set-classes` (classes baked at export time), `open-text` (prompt supplied at runtime) and `prompt-free` (planned, not implemented) -- and a `deepstream/` folder with everything that runs the engines (pipelines, configs, the custom `nvinfer` plugin). Every engine outputs detections and masks. Generated engines go into `weight/` at the repo root.
 
 ## Setup
 
@@ -20,26 +20,23 @@ Also requires (not pip-installable): DeepStream 9 (`pyservicemaker`), TensorRT 1
 
 Always run and test in FP16 — TensorRT engines and PyTorch tests/benchmarks alike (`model.half()`, pixel scaling kept in fp32). Never use FP32, and never `torch.autocast` over FP32 weights: FP32 is only marginally more accurate and much slower, and on the 4 GB dev GPU (RTX 3050 Ti, sm_86) autocast keeps both weight copies and spills out of VRAM (8 s/forward vs 0.2 s for a real fp16 model). Do not spend time on FP32 comparisons. FP8 needs sm_89+ and cannot be built or run here.
 
-TensorRT 11 is strongly typed: `trtexec` has no `--fp16`, the engine precision is the dtype in the ONNX. `SAM3Fixed/export.py` exports the FP32 graph (sdpa) and converts it with `onnx_to_fp16` (onnxconverter-common, input and output become fp16 too; no shape inference because it needs ~7 GB RAM, so leftover `Cast(to=fp32)` nodes are patched there). Engine `person` @420: 100/106 boxes, IoU 0.829, ~76 ms/frame, same accuracy as the old `--fp16` engines. Exporting a `.half()` model with `attn_implementation="eager"` also works (~69 ms) but sdpa's ONNX symbolic breaks an fp16 graph (fp32 mask constants). `SAM3Open/export.py` still passes `--fp16` and has not been ported.
+TensorRT 11 is strongly typed: `trtexec` has no `--fp16`, the engine precision is the dtype in the ONNX. `export.py` exports the FP32 graph (sdpa) and converts it with `onnx_to_fp16` (onnxconverter-common, input and output become fp16 too; no shape inference because it needs ~7 GB RAM, so leftover `Cast(to=fp32)` nodes are patched there), for the `set-classes` engine and for both `open-text` engines (`sam3open_text.py` and the plugin read fp16 text features). Engine `person` @420: 100/106 boxes, IoU 0.829, ~76 ms/frame, same accuracy as the old `--fp16` engines. Exporting a `.half()` model with `attn_implementation="eager"` also works (~69 ms) but sdpa's ONNX symbolic breaks an fp16 graph (fp32 mask constants).
 
 Set `HF_HUB_OFFLINE=1` when exporting from the local HF cache: the `[Load]` step drops from 20-36 min to ~15 s. The machine has 7 GB RAM; the export process can be OOM-killed while `trtexec` runs (the child keeps going, check `sam3.engine`).
 
 ## Common commands
 
-Export an engine (dispatches to the right architecture based on `--prompt`):
+Export an engine (every mode writes detections and masks; the imgsz 71/72 grid fix applies to all of them):
 ```bash
-python3 export.py --prompt truck car --mode det --imgsz 420   # baked -> weight/sam3_420_det_car_truck/
-python3 export.py --imgsz 1008                                 # open-vocab -> weight/sam3_1008_open/ (once, ever)
+python3 export.py --mode set-classes --classes truck car --imgsz 420   # classes baked -> weight/sam3_420_set-classes_truck_car/
+python3 export.py --mode open-text --imgsz 420 --k-max 5               # prompt at runtime -> weight/sam3_420_open-text/ (once, ever)
+python3 export.py --mode prompt-free                                   # planned: raises NotImplementedError
 ```
 
-Run the SAM3Fixed pipeline (baked classes, multi-class per camera, engine auto-built on first run):
+Run a DeepStream pipeline (DeepStream is not installed on the dev machine: these were not run after the move into `deepstream/`):
 ```bash
-cd SAM3Fixed && python3 ds9_rtsp.py    # reads config.txt; edit it live to hot-swap prompts
-```
-
-Run the SAM3Open pipeline (open-vocab, comma-separated class list per camera, up to 4 cameras × K_MAX=5 classes):
-```bash
-cd SAM3Open && python3 ds9_rtsp.py   # reads config.txt; edit it live to hot-swap prompts
+cd deepstream && python3 ds9_set_classes.py   # set-classes: reads config_set_classes.txt; the engine is auto-built on first run; edit the config live to hot-swap prompts
+cd deepstream && python3 ds9_open_text.py     # open-text: comma-separated class list per camera, up to 4 cameras x K_MAX=5 classes; reads config_open_text.txt
 ```
 
 Build the custom DeepStream plugin after editing its `.cpp` (one plugin for both architectures, C++20; the `.so` is a build artifact and is not in git, it needs the DeepStream and CUDA headers):
@@ -48,9 +45,9 @@ cd deepstream && g++ -shared -fPIC -O2 -std=c++20 -o libnvdsinfer_sam3.so nvdspa
     -I/opt/nvidia/deepstream/deepstream/includes \
     -I/usr/local/cuda-13.2/targets/x86_64-linux/include
 ```
-The parser logic has a unit test that needs no DeepStream (a fake header stands in): `g++ -std=c++20 -I deepstream/test deepstream/test/test_parser.cpp -o /tmp/test_parser && /tmp/test_parser`. Engine configs generated by older exports still point at the old `SAM3Fixed/libnvdsinfer_sam3.so`: export again, or edit `custom-lib-path`.
+The parser logic has a unit test that needs no DeepStream (a fake header stands in): `g++ -std=c++20 -I deepstream/test deepstream/test/test_parser.cpp -o /tmp/test_parser && /tmp/test_parser`. Engine configs generated by older exports still point at the old `SAM3Fixed/libnvdsinfer_sam3.so` (and the old engine folder names): export again, or edit `custom-lib-path`.
 
-There is no automated test suite — the two production pipeline scripts above are the verification path (run them against real or fake-RTSP sources and check the detections/output video).
+There is no automated test suite. Refactors of `export.py` are checked by comparing the PyTorch forward of the old and new code on the same weights (bit-identical), then `test/golden.py check` on a rebuilt engine (see Engine contract). The pipeline scripts in `deepstream/` are the verification path for the DeepStream side (real or fake-RTSP sources, check the detections/output video).
 
 Per-stage throughput (decode fps, text encoder, vision decoder, baked engine), from the repo root:
 ```bash
@@ -59,57 +56,57 @@ python3 bench_stages.py --imgsz 420 --batch 1 2 4
 
 ## Architecture
 
-### Two self-contained folders, one shared weight/ folder
+### One export script, a deepstream/ folder, one shared weight/ folder
 
-`SAM3Fixed/` and `SAM3Open/` each hold their own export script and DeepStream pipeline script(s) + `config.txt`; the custom `nvinfer` plugin (`deepstream/nvdsparsebbox_sam3.cpp` → `libnvdsinfer_sam3.so`, one for both) is shared. Nothing about one architecture reaches into the other: both export scripts import the encoder/decoder modules and the imgsz fix from `sam3_common.py` at the repo root (one copy). Both write their generated engines into the shared `weight/` folder at the repo root (`weight/sam3_{imgsz}_{mode}_{classes}/` for Fixed, `weight/sam3_{imgsz}_open/` for Open) rather than next to themselves.
+`export.py` builds every engine and holds the SAM3 modules it traces (vision encoder, DETR encoder/decoder) and applies the imgsz != 1008 grid fix at import, so the fix holds for every mode. `deepstream/` holds everything that runs the engines: the two pipelines (`ds9_set_classes.py`, `ds9_open_text.py`), `spec_cache.py`, `sam3open_text.py`, the configs (`config_set_classes.txt`, `config_open_text.txt`, `config_tracker_NvSORT_i5.yml`), the guides and the custom `nvinfer` plugin (`nvdsparsebbox_sam3.cpp` → `libnvdsinfer_sam3.so`, one for every mode). Generated engines go into `weight/` at the repo root: `weight/sam3_{imgsz}_set-classes_{classes}/` and `weight/sam3_{imgsz}_open-text/`.
 
-### Two ways to give SAM3 a prompt
+### Three ways to give SAM3 a prompt
 
-**`SAM3Fixed/`** — classes are baked into the ONNX graph at export time as constants (`export.py`, formerly `specialize.py`). The resulting engine takes only an image as input and outputs detections directly, running natively in `nvinfer` exactly like a YOLO model. Changing classes requires re-exporting (or hot-swapping to a different already-built engine, see Multi-camera union-prompt pattern below). Multiple classes per camera are supported (cost scales with class count — see `Sam3Wrapper` below).
+**`--mode set-classes`** — classes are baked into the ONNX graph at export time as constants. The resulting engine takes only an image as input and outputs detections and masks, running natively in `nvinfer` exactly like a YOLO model. Changing classes requires re-exporting (or hot-swapping to a different already-built engine, see Multi-camera union-prompt pattern below). Multiple classes per camera are supported (cost scales with class count — see `Sam3Wrapper` below).
 
-**`SAM3Open/`** — open-vocabulary: the prompt is encoded into a tensor at runtime instead of being baked in (`export.py`, formerly `export_onnx_dynamic.py`, produces a separate `text_encoder.engine` + `vision_decoder.engine`, built once, never re-exported). `ds9_rtsp.py` is a real, working camera pipeline: each camera gets a comma-separated class list (`prompt = car, truck`, up to `K_MAX=5` classes — baked into the engine by `export.py --k-max`, must match `sam3open_text.K_MAX`), and up to `MAX_SOURCES=4` cameras (matching the engine's max profile batch — `sam3open_text.py`) are scored in the SAME `nvinfer` forward pass, each against its own classes. Each class gets its own text embedding (slot k of the camera's row); the ViT runs once per image, the K_MAX slots ride the batch axis through the DETR decoder (decoder cost is paid for all K_MAX slots of every camera, used or not; unused slots have an all-False `text_mask` and score 0).
+**`--mode open-text`** — open-vocabulary: the prompt is encoded into a tensor at runtime instead of being baked in (a separate `text_encoder.engine` + `vision_decoder.engine`, built once, never re-exported). `deepstream/ds9_open_text.py` is a real, working camera pipeline: each camera gets a comma-separated class list (`prompt = car, truck`, up to `K_MAX=5` classes — baked into the engine by `export.py --k-max`, must match `sam3open_text.K_MAX`), and up to `MAX_SOURCES=4` cameras (matching the engine's max profile batch — `sam3open_text.py`) are scored in the SAME `nvinfer` forward pass, each against its own classes. Each class gets its own text embedding (slot k of the camera's row); the ViT runs once per image, the K_MAX slots ride the batch axis through the DETR decoder (decoder cost is paid for all K_MAX slots of every camera, used or not; unused slots have an all-False `text_mask` and score 0).
 
-`export.py` at the repo root is a thin dispatcher over both: `--prompt <classes>` calls `SAM3Fixed/export.py`; no `--prompt` calls `SAM3Open/export.py`.
+**`--mode prompt-free`** — not implemented yet: the idea is a grid of points (one per ViT patch) through the SAM3 tracker (`tracker_model` / `tracker_neck` in the `facebook/sam3` checkpoint, which `Sam3Model` drops; `Sam3TrackerModel` has them), filtered by the tracker's IoU and object scores. The `export.py` mode exists so the three share one CLI.
 
 ### Engine contract (what a refactor must not change)
 
-Every mode (Fixed, Open, and the planned prompt-free) keeps the same I/O so the DeepStream side and the Python runtimes do not care which one built the engine:
+Every mode (set-classes, open-text and the planned prompt-free) keeps the same I/O so the DeepStream side and the Python runtimes do not care which one built the engine:
 
 - **Input** `pixel_values` fp16 `[B,3,S,S]`, RGB, resized straight to S x S (no letterbox), `(x - 127.5) / 127.5` (nvinfer: `net-scale-factor=1/127.5`, `offsets=127.5`). S is square and a multiple of 14.
-- **Output** `detections` fp16 `[B,N,6]` = `x1 y1 x2 y2 score cls_id`, in pixels of the S x S input (the parser rescales). N = classes x 200 (Fixed) or K_MAX x 200 (Open); `cls_id = i // 200` is the class slot.
-- **Output (optional)** `masks` fp16 `[B,N,Hm,Wm]`, probabilities in [0,1], row i belongs to `detections` row i (`--mode seg`, currently 36 x 36).
-- **Check** a rebuilt engine against the saved one: `python test/golden.py check weight/<new>/sam3.engine 420 test/golden/person_420.npz` (bus.jpg + 8 coco128 images, class `person`; exit 1 if a golden box with score >= 0.5 is lost, moves (IoU < 0.9) or its score drifts by > 0.05). `save` writes a new golden from an engine you trust.
+- **Output** `detections` fp16 `[B,N,6]` = `x1 y1 x2 y2 score cls_id`, in pixels of the S x S input (the parser rescales). N = classes x 200 (set-classes) or K_MAX x 200 (open-text); `cls_id = i // 200` is the class slot. Boxes are clamped to the frame.
+- **Output** `masks` fp16 `[B,N,Hm,Wm]`, probabilities in [0,1], row i belongs to `detections` row i (always present, currently 36 x 36). `open-text` also takes fp16 `text_features [B,K,32,256]` and a bool `text_mask [B,K,32]`.
+- **Check** a rebuilt engine against the saved one: `python test/golden.py check weight/<new>/sam3.engine 420 test/golden/person_420.npz` (bus.jpg, 8 coco128 images and 60 val2017 images, class `person`, 190 golden boxes with score >= 0.5; exit 1 if one is lost (IoU < 0.7 or score drift > 0.25) or the median IoU falls under 0.98 or the p95 score drift passes 0.05; a plain rebuild of the same ONNX gives min IoU 0.82, median 0.996, p95 drift 0.019, so rebuilt engines pass but a moved box does not). `save` writes a new golden from an engine you trust.
 
-### `export.py`'s export pattern (SAM3Fixed)
+### `export.py`'s export pattern
 
-SAM3 is decomposed into ONNX-traceable submodules (`_VisionEncoder`/`_VisionEncoderFull`, `_Decoder`/`_DecoderFull`) rather than exporting the HuggingFace model directly, because the stock model hard-fails at any resolution other than 1008 (missing dynamic RoPE/position-embedding resize logic). `_VisionEncoder.__init__` rebuilds each ViT layer's `rotary_emb` for the target `Hp,Wp` and re-tiles the absolute position embedding before tracing — this is what makes `--imgsz` other than 1008 possible at all (must still be a multiple of `patch_size`, square). `SAM3Open/export.py` has the same modules (a copy) and takes `--imgsz` too (default 1008; 420 verified end-to-end on 2 cameras). `SAM3Open/config.txt` `[model] imgsz` must match the engines' export size.
+SAM3 is decomposed into ONNX-traceable submodules (`_VisionEncoder`/`_VisionEncoderFull`, `_Decoder`/`_DecoderFull`) rather than exporting the HuggingFace model directly, because the stock model hard-fails at any resolution other than 1008 (missing dynamic RoPE/position-embedding resize logic). `_VisionEncoder.__init__` rebuilds each ViT layer's `rotary_emb` for the target `Hp,Wp` and re-tiles the absolute position embedding before tracing — this is what makes `--imgsz` other than 1008 possible at all (must still be a multiple of `patch_size`, square). Both the `set-classes` and the `open-text` wrapper use them (`--imgsz` default 420; 420 verified end-to-end on 2 cameras with the old Open pipeline). `deepstream/config_open_text.txt` `[model] imgsz` must match the engines' export size.
 
-`Sam3Wrapper` bakes N classes as ONNX constants (`text_feat_all`/`text_mask_all`) and folds them into the batch axis: the ViT runs once, its outputs are repeated to `B*N` rows (row `b*N+i` = image b × class i), and the DETR decoder runs once over all rows, then reshapes back to `[B, N*Q, ...]` (class-major, `cls_id = i // Q`). FLOPs of the decoder still scale with N (the DETR encoder fuses text per prompt) but there is no per-class graph unroll, and activation memory scales with `B*N`.
+`Sam3Wrapper` (set-classes) bakes N classes as ONNX constants and calls `DynamicVisionDecoderWrapper` (the open-text wrapper: text features as inputs) with them; it (`text_feat_all`/`text_mask_all`); the class slots fold into the batch axis: the ViT runs once, its outputs are repeated to `B*N` rows (row `b*N+i` = image b × class i), and the DETR decoder runs once over all rows, then reshapes back to `[B, N*Q, ...]` (class-major, `cls_id = i // Q`). FLOPs of the decoder still scale with N (the DETR encoder fuses text per prompt) but there is no per-class graph unroll, and activation memory scales with `B*N`.
 
 ### Object queries (200 per class/slot) are not worth cutting
 
 The 200 learned object queries (`Sam3DetrDecoder.query_embed`, paper default `Q=200`) cannot be shrunk cheaply: truncating to the first N (tried 100/50/25 on 24 frames of `pedestrians.mp4`, imgsz 420, Q=200 as reference, conf 0.3 + NMS 0.6) kept ~83-90% / 68-82% / ~59% of the reference detections with growing score drift, and the PyTorch fp32 forward time did not change measurably (~420 ms; backbone + DETR encoder dominate). Only 85 of 200 queries ever fired on that clip but which ones depends on the image (query 87 alone took 22/236 detections), so there is no fixed "best N". Each query is conditioned on one prompt, so a shared pool across classes is not possible either; cost scales with the number of classes/slots. There is deliberately no `--num-queries` option.
 
-### Multi-camera union-prompt pattern (SAM3Fixed)
+### Multi-camera union-prompt pattern (set-classes)
 
-`SAM3Fixed/spec_cache.py` lets cameras with different prompts share one engine: it computes the sorted union of every camera's requested classes, builds (or reuses) one engine in `weight/` baked with that union via `export.py`, and `PerCameraFilter` (in `ds9_rtsp.py`) filters detections back down per-camera by `cls_id` afterward. Engine folders are named `sam3_{imgsz}_{mode}_{sorted-union-classes}/` so the same class set always resolves to the same folder regardless of which camera declared it first.
+`deepstream/spec_cache.py` lets cameras with different prompts share one engine: it computes the sorted union of every camera's requested classes, builds (or reuses) one engine in `weight/` baked with that union via `export.py`, and `PerCameraFilter` (in `ds9_set_classes.py`) filters detections back down per-camera by `cls_id` afterward. Engine folders are named `sam3_{imgsz}_set-classes_{sorted-union-classes}/` so the same class set always resolves to the same folder regardless of which camera declared it first.
 
-Because `nvinfer`'s `config-file-path` property is live-swappable while the pipeline runs (as long as input resolution is unchanged — verified experimentally), this same union-prompt engine can be hot-swapped at runtime when a camera's prompt changes, without restarting GStreamer. `ds9_rtsp.py`'s watcher thread implements this: it polls `config.txt` for changes, recomputes the union, builds a new engine if that union hasn't been seen before, and calls `nvinfer.set({"config-file-path": ...})`.
+Because `nvinfer`'s `config-file-path` property is live-swappable while the pipeline runs (as long as input resolution is unchanged — verified experimentally), this same union-prompt engine can be hot-swapped at runtime when a camera's prompt changes, without restarting GStreamer. `ds9_set_classes.py`'s watcher thread implements this: it polls `config_set_classes.txt` for changes, recomputes the union, builds a new engine if that union hasn't been seen before, and calls `nvinfer.set({"config-file-path": ...})`.
 
-### Per-camera prompt injection (SAM3Open)
+### Per-camera prompt injection (open-text)
 
-`vision_decoder.engine` takes `pixel_values`/`text_features`/`text_mask` as inputs (batch dim = camera count, matching `nvstreammux`). `nvinfer` handles `pixel_values` (the image) automatically like any detector; `text_features`/`text_mask` are non-image input layers, injected by `deepstream/nvdsparsebbox_sam3.cpp`'s `NvDsInferInitializeInputLayers` — a fixed symbol name `nvinfer` looks up via `dlsym` (a custom name is silently never called; verified empirically). It reads two flat snapshot files written by `SAM3Open/sam3open_text.py`:
+`vision_decoder.engine` takes `pixel_values`/`text_features`/`text_mask` as inputs (batch dim = camera count, matching `nvstreammux`). `nvinfer` handles `pixel_values` (the image) automatically like any detector; `text_features`/`text_mask` are non-image input layers, injected by `deepstream/nvdsparsebbox_sam3.cpp`'s `NvDsInferInitializeInputLayers` — a fixed symbol name `nvinfer` looks up via `dlsym` (a custom name is silently never called; verified empirically). It reads two flat snapshot files written by `deepstream/sam3open_text.py`:
 ```
-/dev/shm/sam3open_text_features.bin   MAX_SOURCES x K_MAX x 32 x 256  float32
+/dev/shm/sam3open_text_features.bin   MAX_SOURCES x K_MAX x 32 x 256  float16 (the engine's dtype: the plugin copies the bytes as they are)
 /dev/shm/sam3open_text_mask.bin       MAX_SOURCES x K_MAX x 32        uint8   (TRT reports BOOL; DeepStream maps it to UINT8)
 ```
-row *b* slot *k* = camera *b*'s k-th class encoding (from `text_encoder.engine`, run directly via TensorRT in Python — not through `nvinfer`). This function is called once per `nvinfer` context (re)load, not per frame — so a prompt change needs a snapshot rewrite followed by `nvinfer.set({"config-file-path": <SAME path>})`, which reloads the context and re-triggers it (verified: reloading the *same* config path re-reads the snapshot files). No TensorRT engine rebuild is ever needed for a prompt change. `SAM3Open/ds9_rtsp.py`'s watcher thread implements this the same way `SAM3Fixed/ds9_rtsp.py`'s does for the baked engine (see Multi-camera union-prompt pattern above).
+row *b* slot *k* = camera *b*'s k-th class encoding (from `text_encoder.engine`, run directly via TensorRT in Python — not through `nvinfer`). This function is called once per `nvinfer` context (re)load, not per frame — so a prompt change needs a snapshot rewrite followed by `nvinfer.set({"config-file-path": <SAME path>})`, which reloads the context and re-triggers it (verified: reloading the *same* config path re-reads the snapshot files). No TensorRT engine rebuild is ever needed for a prompt change. `ds9_open_text.py`'s watcher thread implements this the same way `ds9_set_classes.py`'s does for the baked engine (see Multi-camera union-prompt pattern above).
 
-`deepstream/nvdsparsebbox_sam3.cpp`'s `NvDsInferParseSam3OpenDet` reads `detections [K_MAX*200,6]` (float32 or float16, by the layer's dtype) (`x1 y1 x2 y2 score cls_id`, pixel units); `cls_id` is the camera's class slot (NMS only suppresses within the same slot), and `SAM3Open/ds9_rtsp.py`'s `PromptLabeler` maps `(camera, cls_id)` to the display label from the camera's class list instead of a fixed `labels.txt`.
+`deepstream/nvdsparsebbox_sam3.cpp`'s `NvDsInferParseSam3OpenDet` reads `detections [K_MAX*200,6]` (float32 or float16, by the layer's dtype) (`x1 y1 x2 y2 score cls_id`, pixel units); `cls_id` is the camera's class slot (NMS only suppresses within the same slot), and `ds9_open_text.py`'s `PromptLabeler` maps `(camera, cls_id)` to the display label from the camera's class list instead of a fixed `labels.txt`.
 
 ### The imgsz != 1008 box-accuracy fix
 
-The checkpoint was only trained at imgsz 1008 (H = 72 cells of 14 px). At other `imgsz` the boxes shrink toward the top-left corner (width ~ -10% at 420), smoothly in H. `sam3_common.py` (imported by both `SAM3Fixed/export.py` and `SAM3Open/export.py`) patches `Sam3DetrDecoder._get_coords` at **module import time**, baked into every exported engine (no flag): `arange(0,H)/(H-1) * 71/72` (`_TRAIN_GRID = 72`). This fixes the box *centre*, is the identity at H = 72, and the original grid `arange/H` is only a convention.
+The checkpoint was only trained at imgsz 1008 (H = 72 cells of 14 px). At other `imgsz` the boxes shrink toward the top-left corner (width ~ -10% at 420), smoothly in H. `export.py` (imported by `export.py`, so it applies to every mode) patches `Sam3DetrDecoder._get_coords` at **module import time**, baked into every exported engine (no flag): `arange(0,H)/(H-1) * 71/72` (`_TRAIN_GRID = 72`). This fixes the box *centre*, is the identity at H = 72, and the original grid `arange/H` is only a convention.
 
 The box *size* is not fixed by it. A query-box scale (`Sam3SinePositionEmbedding.encode_boxes` on `box * (H/72)`, "sineq") fixes it empirically (width -10.4% -> -1.8% at 420) but is **not shipped** while its mechanism and exponent are researched; it lives only in `test/` (`collect_box_pairs.py` variant `sineq`, `compare_bus.py`). Engines built before this change may still carry it. Rejected: letting the grid end at 1.0, content resolution, window padding, encoder RoPE/abs-pos. Full evidence: `test/BOX_SHRINK_INVESTIGATION.md`.
 
@@ -125,5 +122,5 @@ Research scripts, not part of the pipelines; all run PyTorch eager FP16 on coco1
 ### DeepStream pipeline gotchas (measured on this hardware — RTX 50-series, driver 610.x, DS 9.1)
 
 - **Video encoder**: use `nvv4l2h264enc`, and force `video/x-raw(memory:NVMM),format=NV12` via a `capsfilter` immediately before it — without the explicit format, GStreamer negotiates I420 (listed first in the sink template) and the encoder misreads chroma, corrupting the image (bitstream stays valid, so `ffmpeg -v error` reports zero errors — only visual inspection catches it). Also set `idrinterval` explicitly; `iframeinterval` alone gets ignored and produces too few real seek points. `nvh264enc` and `nvcudah264enc` do not work at all with a DeepStream hardware-decode source on this GPU/driver combination.
-- **Tracker**: `NvSORT` (cascaded/greedy matching, no visual tracker) is cheaper than `NvDCF` and tolerates a higher `interval`, but its stock `probationAge`/`minTrackerConfidence` assume near-every-frame detection — at `interval=5` they need lowering (`probationAge=1`, `minTrackerConfidence≈0.1`) or tracks never "mature" and zero boxes get emitted (see `config_tracker_NvSORT_i5.yml`, present in both `SAM3Fixed/` and `SAM3Open/`).
-- The custom parsers read detection count and layer shapes from the actual output tensor at runtime rather than assuming a fixed layout, so they stay correct across different baked class counts (SAM3Fixed) or camera counts (SAM3Open) without recompiling.
+- **Tracker**: `NvSORT` (cascaded/greedy matching, no visual tracker) is cheaper than `NvDCF` and tolerates a higher `interval`, but its stock `probationAge`/`minTrackerConfidence` assume near-every-frame detection — at `interval=5` they need lowering (`probationAge=1`, `minTrackerConfidence≈0.1`) or tracks never "mature" and zero boxes get emitted (see `deepstream/config_tracker_NvSORT_i5.yml`).
+- The custom parsers read detection count and layer shapes from the actual output tensor at runtime rather than assuming a fixed layout, so they stay correct across different baked class counts (set-classes) or camera counts (open-text) without recompiling.

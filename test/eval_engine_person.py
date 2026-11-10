@@ -1,8 +1,8 @@
-"""Box size/centre error of a SAM3Fixed TensorRT engine (baked class 'person') against COCO ground truth.
+"""Box size/centre error of a set-classes TensorRT engine (baked class 'person') against COCO ground truth.
 
 Runs the engine itself (TensorRT, FP16) on every coco128 image that has a 'person' GT box covering >= 2% of the
 image, and reports the same quantities as analyze_box_pairs.py (mean width/height error in %, centre error in
-patches, recall@0.5, mean IoU). Use it to check that the fixes in SAM3Fixed/export.py really end up in the engine.
+patches, recall@0.5, mean IoU). Use it to check that the fixes in export.py really end up in the engine.
 
     python test/eval_engine_person.py weight/sam3_420_det_person/sam3_new.engine 420 [--set first|held|all]
 """

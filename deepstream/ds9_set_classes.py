@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Production DeepStream 9 RTSP pipeline for the SAM3Fixed (baked-classes)
-architecture -- multi-camera, each camera can have its own prompt, all
+Production DeepStream 9 RTSP pipeline for the set-classes (baked-classes)
+mode of export.py -- multi-camera, each camera can have its own prompt, all
 sharing ONE engine baked with the union of every camera's classes
 (spec_cache.py), post-filtered per camera by cls_id (PerCameraFilter).
 
@@ -12,14 +12,14 @@ config-file-path -- no GStreamer restart.
 
 Reads all settings from config.txt (or $DS_CONFIG override):
   [sources]  urls           -- one RTSP url per line, in camera-index order
-  [model]    mode, imgsz    -- shared by every camera (one engine)
+  [model]    imgsz          -- shared by every camera (one engine)
              classes, conf  -- fallback prompt/threshold for cameras with
                                 no own [camN] section
   [camN]     classes         -- optional per-camera prompt override
   [pipeline] width, height, infer_interval, run_seconds, output_file
 
 Usage:
-    CUDA_VISIBLE_DEVICES=1 python3 ds9_rtsp.py          # live cameras (config.txt)
+    CUDA_VISIBLE_DEVICES=1 python3 ds9_set_classes.py  # live cameras (config_set_classes.txt)
 
 To test against a video file instead of a live camera, restream it as fake
 RTSP yourself (e.g. via mediamtx + ffmpeg) and point a `urls` entry at that
@@ -44,7 +44,7 @@ from pyservicemaker import Pipeline, BatchMetadataOperator, Probe
 import spec_cache
 
 TRACKER_LIB = "/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so"
-CONFIG_PATH = Path(os.environ.get("DS_CONFIG", str(_HERE / "config.txt")))
+CONFIG_PATH = Path(os.environ.get("DS_CONFIG", str(_HERE / "config_set_classes.txt")))
 
 
 def tracker_available():
@@ -65,7 +65,6 @@ def read_config():
     cfg = configparser.ConfigParser()
     cfg.read(CONFIG_PATH)
     sources = [s.strip() for s in cfg.get("sources", "urls").strip().splitlines() if s.strip()]
-    mode = cfg.get("model", "mode", fallback="seg")
     imgsz = cfg.getint("model", "imgsz", fallback=1008)
     conf = cfg.getfloat("model", "conf", fallback=0.4)
     default_classes = [c.strip() for c in cfg.get("model", "classes", fallback="object").split(",") if c.strip()]
@@ -85,7 +84,7 @@ def read_config():
         run_seconds=cfg.getint("pipeline", "run_seconds", fallback=0),  # 0 = run until Ctrl+C
         output_file=cfg.get("pipeline", "output_file", fallback=""),
     )
-    return sources, mode, imgsz, conf, camera_prompts, pcfg
+    return sources, imgsz, conf, camera_prompts, pcfg
 
 
 def patch_infer_config(engine_dir, batch_size, conf, num_classes):
@@ -159,7 +158,7 @@ class PerCameraFilter(BatchMetadataOperator):
                 print(f"  cam{cam} #{frame_meta.frame_number}: {' | '.join(parts)}", flush=True)
 
 
-def build_pipeline(sources, width, height, infer_interval, infer_config, mode, flt, output_file):
+def build_pipeline(sources, width, height, infer_interval, infer_config, flt, output_file):
     p = Pipeline("sam3fixed-ds")
     names = [f"cam{i}" for i in range(len(sources))]
 
@@ -221,7 +220,7 @@ def build_pipeline(sources, width, height, infer_interval, infer_config, mode, f
     p.add("nvvideoconvert", "conv1", {})
     p.link("tiler", "conv1")
 
-    p.add("nvdsosd", "osd", {"process-mode": 0, "display-text": True, "display-mask": mode == "seg"})
+    p.add("nvdsosd", "osd", {"process-mode": 0, "display-text": True, "display-mask": True})
     p.link("conv1", "osd")
 
     # Encoder -- measured on this hardware (RTX 50-series, driver 610.x,
@@ -255,7 +254,7 @@ def build_pipeline(sources, width, height, infer_interval, infer_config, mode, f
     return p
 
 
-def watcher_thread(mode, imgsz, conf, n_cams, pipeline, flt, active_union_box, stop_event):
+def watcher_thread(imgsz, conf, n_cams, pipeline, flt, active_union_box, stop_event):
     """Polls config.txt's mtime. On change: re-reads per-camera prompts,
     recomputes the union; if it DIFFERS from the active union -> ensure_spec
     (build if missing) -> patch config_infer.txt -> nvinfer.set({"config-
@@ -292,7 +291,7 @@ def watcher_thread(mode, imgsz, conf, n_cams, pipeline, flt, active_union_box, s
 
         t0 = time.time()
         try:
-            engine_dir = spec_cache.ensure_spec(union, mode=mode, imgsz=imgsz)
+            engine_dir = spec_cache.ensure_spec(union, imgsz=imgsz)
         except Exception as e:
             print(f"[watcher] engine build failed: {e}", flush=True)
             continue
@@ -309,7 +308,7 @@ def watcher_thread(mode, imgsz, conf, n_cams, pipeline, flt, active_union_box, s
 
 
 def main():
-    sources, mode, imgsz, conf, camera_prompts, pcfg = read_config()
+    sources, imgsz, conf, camera_prompts, pcfg = read_config()
     if not sources:
         sys.exit("ERROR: config.txt [sources]/urls is empty")
 
@@ -317,17 +316,17 @@ def main():
     print(f"[ds9] {len(sources)} cams  prompts={camera_prompts}")
     print(f"[ds9] union (shared engine): {union}  cam->cls_id: {cam_map}")
 
-    engine_dir = spec_cache.ensure_spec(union, mode=mode, imgsz=imgsz)
+    engine_dir = spec_cache.ensure_spec(union, imgsz=imgsz)
     infer_config = patch_infer_config(engine_dir, len(sources), conf, len(union))
     print(f"[ds9] engine: {engine_dir}")
 
-    default_out = f"output/vis_{mode}_{'_'.join(union)}_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
+    default_out = f"output/vis_set-classes_{'_'.join(union)}_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
     output_file = str(_HERE / (pcfg["output_file"] or default_out))
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
 
     flt = PerCameraFilter(union, cam_map)
     pipeline = build_pipeline(sources, pcfg["width"], pcfg["height"], pcfg["infer_interval"],
-                               infer_config, mode, flt, output_file)
+                               infer_config, flt, output_file)
 
     pipeline_done = threading.Event()
     stop_called   = threading.Event()
@@ -356,7 +355,7 @@ def main():
 
     threading.Thread(target=_run, daemon=True).start()
     watcher = threading.Thread(target=watcher_thread, daemon=True, args=(
-        mode, imgsz, conf, len(sources), pipeline, flt, active_union_box, stop_watcher))
+        imgsz, conf, len(sources), pipeline, flt, active_union_box, stop_watcher))
     watcher.start()
 
     t0 = time.time()

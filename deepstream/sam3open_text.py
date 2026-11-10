@@ -1,15 +1,15 @@
 """
-Text-encoder + non-image-input-snapshot helper for the SAM3Open + DeepStream
-pipeline (ds9_rtsp.py).
+Text-encoder + non-image-input-snapshot helper for the open-text + DeepStream
+pipeline (ds9_open_text.py).
 
-Runs ../weight/sam3_{imgsz}_open/text_encoder.engine directly via TensorRT --
+Runs ../weight/sam3_{imgsz}_open-text/text_encoder.engine directly via TensorRT --
 NOT through nvinfer, which only ever runs the vision decoder. The text
 encoder runs once per unique prompt (cached), here in Python, and the
 result is written into two flat snapshot files that
 nvdsparsebbox_sam3.cpp's NvDsInferInitializeInputLayers reads at every
 nvinfer context (re)load:
 
-    /dev/shm/sam3open_text_features.bin   MAX_SOURCES x K_MAX x 32 x 256  float32
+    /dev/shm/sam3open_text_features.bin   MAX_SOURCES x K_MAX x 32 x 256  float16
     /dev/shm/sam3open_text_mask.bin       MAX_SOURCES x K_MAX x 32        uint8
 
 Row b = camera b; slot k = its k-th class (a camera's prompt is a comma-
@@ -17,7 +17,7 @@ separated class list). Unused cameras/slots stay zero: a slot whose mask is
 all zero scores 0 inside the graph, so it never produces detections.
 
 MAX_SOURCES must match vision_decoder.engine's max optimization-profile
-batch (currently 4 -- see SAM3Open/export.py / the --max-batch used at
+batch (currently 4 -- see export.py --mode open-text / the --max-batch used at
 trtexec build time). Rebuild the engine with a larger max batch to raise
 the camera limit.
 """
@@ -38,7 +38,7 @@ FEAT_DIM = 256
 
 
 def open_dir_for(imgsz):
-    return os.environ.get("SAM3OPEN_DIR") or os.path.join(WEIGHT_DIR, f"sam3_{imgsz}_open")
+    return os.environ.get("SAM3OPEN_DIR") or os.path.join(WEIGHT_DIR, f"sam3_{imgsz}_open-text")
 
 
 SNAPSHOT_FEATURES = "/dev/shm/sam3open_text_features.bin"
@@ -55,10 +55,10 @@ class TextEncoder:
         logger = trt.Logger(trt.Logger.ERROR)
         self.engine = trt.Runtime(logger).deserialize_cuda_engine(open(engine_path, "rb").read())
         self.ctx = self.engine.create_execution_context()
-        self._cache = {}  # prompt string -> (text_features[32,256] f32, text_mask[32] u8)
+        self._cache = {}  # prompt string -> (text_features[32,256] f16, text_mask[32] u8)
 
     def encode(self, prompt: str):
-        """Returns (text_features[32,256] float32, text_mask[32] uint8) numpy arrays."""
+        """Returns (text_features[32,256] float16, text_mask[32] uint8) numpy arrays."""
         if prompt in self._cache:
             return self._cache[prompt]
         tok = self.processor(text=prompt, return_tensors="pt")
@@ -68,14 +68,14 @@ class TextEncoder:
         self.ctx.set_input_shape("attention_mask", mask.shape)
         self.ctx.set_tensor_address("input_ids", ids.data_ptr())
         self.ctx.set_tensor_address("attention_mask", mask.data_ptr())
-        feat = torch.zeros((1, CTX_LEN, FEAT_DIM), dtype=torch.float32, device="cuda")
+        feat = torch.zeros((1, CTX_LEN, FEAT_DIM), dtype=torch.float16, device="cuda")
         tmask = torch.zeros((1, CTX_LEN), dtype=torch.uint8, device="cuda")
         self.ctx.set_tensor_address("text_features", feat.data_ptr())
         self.ctx.set_tensor_address("text_mask", tmask.data_ptr())
         stream = torch.cuda.Stream()
         self.ctx.execute_async_v3(stream_handle=stream.cuda_stream)
         stream.synchronize()
-        out = (feat[0].cpu().numpy().astype(np.float32), tmask[0].cpu().numpy().astype(np.uint8))
+        out = (feat[0].cpu().numpy(), tmask[0].cpu().numpy().astype(np.uint8))
         self._cache[prompt] = out
         return out
 
@@ -92,7 +92,7 @@ def write_snapshot(encoder: TextEncoder, camera_classes: dict):
     is (re)loaded -- the caller triggers that load/reload AFTER this
     returns (pipeline.start() the first time, nvinfer.set({"config-file-path":
     ...}) on later prompt changes)."""
-    feat_full = np.zeros((MAX_SOURCES, K_MAX, CTX_LEN, FEAT_DIM), dtype=np.float32)
+    feat_full = np.zeros((MAX_SOURCES, K_MAX, CTX_LEN, FEAT_DIM), dtype=np.float16)
     mask_full = np.zeros((MAX_SOURCES, K_MAX, CTX_LEN), dtype=np.uint8)
     for cam, classes in camera_classes.items():
         if cam >= MAX_SOURCES:

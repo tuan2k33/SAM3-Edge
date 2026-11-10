@@ -1,6 +1,6 @@
 # Boxes shrink when SAM3 runs at `imgsz` != 1008: research log
 
-Updated: 2026-10-24. Status: the `71/72` grid is shipped in `SAM3Fixed/export.py` and `SAM3Open/export.py`; the `sineq` query-box scale (steps 9-11) was **removed from the export scripts for further research** (it stays in `test/` as a variant). Engines built before 2026-10-24 may still contain it.
+Updated: 2026-10-24. Status: the `71/72` grid is shipped in `export.py` (then `SAM3Fixed/export.py` and `SAM3Open/export.py`, now merged into `export.py`); the `sineq` query-box scale (steps 9-11) was **removed from the export scripts for further research** (it stays in `test/` as a variant). Engines built before 2026-10-24 may still contain it.
 Background: the starting point was the hypothesis "bug in `_get_coords`" (an earlier single-image bus experiment, removed from the repo, still in git history). This file re-checks that hypothesis against ground truth and looks for the real cause.
 
 ## 0. Summary
@@ -236,7 +236,7 @@ Reading: the error at every size is squeezed into a narrow band around 0, **incl
 
 The result holds, the slope goes to ~0.
 
-**(c) Integration (as of 2026-10-23; `sineq` removed since).** The same "Fixes for running at imgsz != 1008" block in `SAM3Fixed/export.py` and `SAM3Open/export.py` (each file self-contained): `Sam3DetrDecoder._get_coords` -> `arange/(H-1)*71/72`; `Sam3SinePositionEmbedding.encode_boxes` multiplies the box by `box_scale = (H/72)^1.0`, with `H` taken from the feature map at export time (a constant in the graph). At 1008 the factor is 1 and the grid is the original. The eager production path equals the experiment's `sineq+71/72` (difference 0.0000); Fixed and Open agree within FP16 error.
+**(c) Integration (as of 2026-10-23; `sineq` removed since).** The same "Fixes for running at imgsz != 1008" block in `export.py` (then `SAM3Fixed/export.py` and `SAM3Open/export.py`, now merged into `export.py`) (each file self-contained): `Sam3DetrDecoder._get_coords` -> `arange/(H-1)*71/72`; `Sam3SinePositionEmbedding.encode_boxes` multiplies the box by `box_scale = (H/72)^1.0`, with `H` taken from the feature map at export time (a constant in the graph). At 1008 the factor is 1 and the grid is the original. The eager production path equals the experiment's `sineq+71/72` (difference 0.0000); Fixed and Open agree within FP16 error.
 
 **(d) Real TensorRT FP16 engine** (`eval_engine_person.py`, class `person` only, 420):
 

@@ -4,14 +4,13 @@ urls =
     rtsp://cam1
 
 [model]
-mode = det
 imgsz = 420
 # fallback prompt for any camera with no [camN] section below
 classes = truck, car
 conf = 0.4
 
 # per-camera prompt override (optional) -- remove or edit freely while the
-# pipeline is running to hot-swap prompts, see ds9_rtsp.py
+# pipeline is running to hot-swap prompts, see ds9_set_classes.py
 [cam0]
 classes = truck
 

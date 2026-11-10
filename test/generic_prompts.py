@@ -10,10 +10,9 @@ import argparse, collections, glob, importlib.util, os, sys
 import cv2, numpy as np, torch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "SAM3Fixed"))
+sys.path.insert(0, os.path.join(HERE, ".."))
 import export as E
-_sp = importlib.util.spec_from_file_location("open_export", os.path.join(HERE, "..", "SAM3Open", "export.py"))
-OE = importlib.util.module_from_spec(_sp); _sp.loader.exec_module(OE)
+OE = E   # export.py holds the set-classes and the text-as-input wrappers
 from transformers.models.sam3 import Sam3Model, Sam3Processor
 
 ap = argparse.ArgumentParser()
@@ -80,7 +79,7 @@ for img, gt, allgt, cls in items:
     runs["oracle"] = [len(PROMPTS) + c for c in cls]
     for name, ids in runs.items():
         with torch.no_grad():
-            d = w(x, TE[ids].unsqueeze(0), AM[ids].unsqueeze(0))[0].float().cpu().numpy()
+            d = w(x, TE[ids].unsqueeze(0), AM[ids].unsqueeze(0))[0][0].float().cpu().numpy()
         d[:, :4] = np.clip(d[:, :4] / S, 0, 1)
         for t in args.thr:
             p = nms(d[(d[:, 4] >= t) & (d[:, 2] > d[:, 0]) & (d[:, 3] > d[:, 1])])

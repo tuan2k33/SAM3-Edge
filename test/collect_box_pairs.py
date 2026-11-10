@@ -14,7 +14,7 @@ clipped to the image, a true fp16 model. A GT box is paired with the best-IoU un
   orig        original grid arange(0,H)/H
   <number>    grid arange(0,H)/(H-1) * number   (a fraction like 71/72 is accepted; 1.0 = grid ending at 1.0)
   cell        original grid, deltas scaled by H/72 before the 8x + log2 encoding (distances in units of cells)
-  prod        the fix as shipped in SAM3Fixed/export.py / SAM3Open/export.py (grid 71/72; the query box scale is research-only: sineq)
+  prod        the fix as shipped in export.py (grid 71/72; the query box scale is research-only: sineq)
   <enc>+<grid>  a decoder patch plus a grid variant, e.g. sineq1.2+71/72 (enc part: sineq<a>, grid part: orig or a cap)
   wbias_<dcx>_<dcy>_<dw>_<dh>  weight edit, no code patch: adds the four numbers to the output bias of the shared box-refinement
               head (model.detr_decoder.box_head.layer3), e.g. wbias_0_0_0.04_0.02+71/72 ('+' joins a grid variant)
@@ -36,14 +36,13 @@ import cv2, numpy as np, torch
 import torch.nn.functional as F
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "SAM3Fixed"))
+sys.path.insert(0, os.path.join(HERE, ".."))
 import export as E
-_sp = importlib.util.spec_from_file_location("open_export", os.path.join(HERE, "..", "SAM3Open", "export.py"))
-OE = importlib.util.module_from_spec(_sp); _sp.loader.exec_module(OE)   # text-as-input wrapper: built once per imgsz
+OE = E   # export.py holds the set-classes and the text-as-input wrappers   # text-as-input wrapper: built once per imgsz
 from transformers.models.sam3 import Sam3Model, Sam3Processor
 from transformers.models.sam3.modeling_sam3 import Sam3DetrDecoder, box_cxcywh_to_xyxy
 
-SHIPPED_COORDS = Sam3DetrDecoder._get_coords               # the grid shipped in SAM3Fixed/export.py and SAM3Open/export.py
+SHIPPED_COORDS = Sam3DetrDecoder._get_coords               # the grid shipped in export.py
 ap = argparse.ArgumentParser()
 ap.add_argument("--coco", default=os.path.join(HERE, "data", "coco128"))
 ap.add_argument("--sizes", default="420")
@@ -152,7 +151,7 @@ def apply_enc_variant(w, v, Hp):
 def forward_encpad(w, x, tf, tm, content):
     """DynamicVisionDecoderWrapper.forward with the feature map cropped to the content region before the decoder."""
     K = tf.shape[1]; hc = content // 14
-    fpn, _ = w.vision_enc(x)                                       # [1, 256, canvas/14, canvas/14]
+    fpn = w.vision_enc(x)[0]                                       # [1, 256, canvas/14, canvas/14]
     fpn = fpn[:, :, :hc, :hc].contiguous()
     npf = w.vision_enc.neck.config.fpn_hidden_size // 2
     pos = E._sine_pos_enc(1, hc, hc, fpn.device, torch.float32, npf).to(fpn.dtype)
@@ -273,7 +272,7 @@ for size in args.sizes.split(","):
                 if v == "encpad":
                     d = forward_encpad(w, x, TE[ids].unsqueeze(0), AM[ids].unsqueeze(0), content)[0].float().cpu().numpy()
                 else:
-                    d = w(x, TE[ids].unsqueeze(0), AM[ids].unsqueeze(0))[0].float().cpu().numpy()
+                    d = w(x, TE[ids].unsqueeze(0), AM[ids].unsqueeze(0))[0][0].float().cpu().numpy()
             d[:, :4] = np.clip(d[:, :4] / content, 0, 1)             # canvas px -> normalised image coordinates
             for i, cid in enumerate(ids):
                 p = d[d[:, 5] == i]

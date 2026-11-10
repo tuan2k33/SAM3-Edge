@@ -3,17 +3,17 @@
  *
  * The one custom nvinfer plugin for all SAM3-Edge engines (libnvdsinfer_sam3.so):
  *
- *   NvDsInferParseSAM3Det      detections [N,6]            x1 y1 x2 y2 score cls_id   (SAM3Fixed, box only)
- *   NvDsInferParseSAM3Full     detections [N,6] + masks [N,Hm,Wm] probabilities       (SAM3Fixed, with masks)
- *   NvDsInferParseSam3OpenDet  detections [N,6]            (SAM3Open; N = K slots * 200, cls_id = the camera's class slot)
- *   NvDsInferInitializeInputLayers   injects text_features [K,32,256] f32 + text_mask [K,32] u8 as non-image input layers (SAM3Open)
+ *   NvDsInferParseSAM3Det      detections [N,6]            x1 y1 x2 y2 score cls_id   (set-classes, box only)
+ *   NvDsInferParseSAM3Full     detections [N,6] + masks [N,Hm,Wm] probabilities       (set-classes, with masks)
+ *   NvDsInferParseSam3OpenDet  detections [N,6]            (open-text; N = K slots * 200, cls_id = the camera's class slot)
+ *   NvDsInferInitializeInputLayers   injects text_features [K,32,256] (the layer's dtype, fp16) + text_mask [K,32] u8 as non-image input layers (open-text)
  *
  * Detections and masks are read as float32 or float16 according to the layer's own dataType.
  * N = num_classes * Q (Q = 200), cls_id for query i is i / Q.
  *
- * SAM3Open text injection: one row per camera slot (K class slots per row), read from two flat snapshot files written by sam3open_text.py;
+ * open-text injection: one row per camera slot (K class slots per row), read from two flat snapshot files written by sam3open_text.py;
  * the row size comes from the layer dims, so K_MAX is not hardcoded here:
- *     /dev/shm/sam3open_text_features.bin   MAX_SOURCES x K x 32 x 256  f32
+ *     /dev/shm/sam3open_text_features.bin   MAX_SOURCES x K x 32 x 256  f16 (the engine's dtype: the bytes are copied as they are)
  *     /dev/shm/sam3open_text_mask.bin       MAX_SOURCES x K x 32        u8   (TensorRT reports BOOL, DeepStream maps it to UINT8)
  * Called once per nvinfer context (re)load: reloading the SAME config-file-path via nvinfer.set() re-triggers it without a pipeline restart or
  * an engine rebuild. nvinfer looks it up by this EXACT symbol name (dlsym); a custom name is silently never called.
@@ -187,7 +187,7 @@ bool NvDsInferParseSAM3Det(
 
 CHECK_CUSTOM_PARSE_FUNC_PROTOTYPE(NvDsInferParseSAM3Det);
 
-// same parser, the name SAM3Open's config_infer.txt uses
+// same parser, the name deepstream/ds9_open_text.py's config_infer.txt uses
 extern "C"
 bool NvDsInferParseSam3OpenDet(
     std::vector<NvDsInferLayerInfo> const &outputLayersInfo,

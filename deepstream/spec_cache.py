@@ -2,7 +2,7 @@
 Union-prompt spec cache: multiple cameras can have different prompts/classes,
 but they all use ONE SHARED engine baked with the UNION of every class
 currently needed -- this fits how nvinfer batches multiple sources through
-one model. Post-processing (in ds9_rtsp.py) filters detections back down to
+one model. Post-processing (in ds9_set_classes.py) filters detections back down to
 the classes each individual camera actually wants, by cls_id.
 
 engine_dir for a given union gets a stable name (classes sorted + normalized)
@@ -15,9 +15,7 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
-SAM3_FIXED_DIR = _HERE  # export.py lives right here, next to this script
-# generated engines go into the shared ../weight/ folder (repo root), not
-# next to export.py, so engine_dir_for() below points into WEIGHT_DIR.
+EXPORT = os.path.join(_ROOT, "export.py")  # at the repo root; engines go into the shared weight/ folder next to it
 WEIGHT_DIR = os.path.join(_ROOT, "weight")
 
 
@@ -45,30 +43,29 @@ def union_classes(camera_prompts):
     return union_sorted, cam_to_cls_ids
 
 
-def engine_dir_for(union_classes_sorted, mode="seg", imgsz=1008):
+def engine_dir_for(union_classes_sorted, imgsz=1008):
     suffix = "_".join(normalize_class(c) for c in union_classes_sorted)
-    return os.path.join(WEIGHT_DIR, f"sam3_{imgsz}_{mode}_{suffix}")
+    return os.path.join(WEIGHT_DIR, f"sam3_{imgsz}_set-classes_{suffix}")
 
 
 def is_spec_ready(engine_dir):
     return os.path.exists(os.path.join(engine_dir, "sam3.engine"))
 
 
-def ensure_spec(union_classes_sorted, mode="seg", imgsz=1008, device="cuda"):
+def ensure_spec(union_classes_sorted, imgsz=1008, device="cuda"):
     """Return engine_dir, building it via export.py if not already present.
     Does NOT bake anything export.py doesn't already do -- this is just
     check-or-build logic plus a naming convention keyed on the union."""
-    engine_dir = engine_dir_for(union_classes_sorted, mode, imgsz)
+    engine_dir = engine_dir_for(union_classes_sorted, imgsz)
     if is_spec_ready(engine_dir):
         print(f"[spec_cache] already available: {engine_dir}")
         return engine_dir
 
     print(f"[spec_cache] not yet specialized, building: classes={union_classes_sorted} "
-          f"mode={mode} imgsz={imgsz} ...")
-    cmd = [sys.executable, os.path.join(SAM3_FIXED_DIR, "export.py"),
-           "--classes", *union_classes_sorted,
-           "--mode", mode, "--imgsz", str(imgsz), "--device", device]
-    subprocess.run(cmd, check=True, cwd=SAM3_FIXED_DIR)
+          f"imgsz={imgsz} ...")
+    cmd = [sys.executable, EXPORT, "--mode", "set-classes", "--classes", *union_classes_sorted,
+           "--imgsz", str(imgsz), "--device", device]
+    subprocess.run(cmd, check=True, cwd=_ROOT)
 
     if not is_spec_ready(engine_dir):
         raise RuntimeError(f"export.py finished but no engine found at {engine_dir}")
@@ -87,5 +84,5 @@ if __name__ == "__main__":
     union, cam_map = union_classes(camera_prompts)
     print("union classes:", union)
     print("cam -> cls_ids:", cam_map)
-    engine_dir = ensure_spec(union, mode="det", imgsz=504)
+    engine_dir = ensure_spec(union, imgsz=504)
     print("engine_dir:", engine_dir)

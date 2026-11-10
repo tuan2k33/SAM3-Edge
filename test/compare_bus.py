@@ -9,10 +9,9 @@ import argparse, importlib.util, os, sys
 import cv2, numpy as np, torch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "SAM3Fixed"))
+sys.path.insert(0, os.path.join(HERE, ".."))
 import export as E
-_sp = importlib.util.spec_from_file_location("open_export", os.path.join(HERE, "..", "SAM3Open", "export.py"))
-OE = importlib.util.module_from_spec(_sp); _sp.loader.exec_module(OE)
+OE = E   # export.py holds the set-classes and the text-as-input wrappers
 from transformers.models.sam3 import Sam3Model, Sam3Processor
 from transformers.models.sam3.modeling_sam3 import Sam3DetrDecoder
 
@@ -44,7 +43,7 @@ def run(S, shipped, sineq=False):
     w = OE.DynamicVisionDecoderWrapper(model, "cuda", S).cuda().eval().half(); w.scale = w.scale.float()
     x = (cv2.cvtColor(cv2.resize(img, (S, S)), cv2.COLOR_BGR2RGB).astype(np.float32) - 127.5) / 127.5
     with torch.no_grad():
-        d = w(torch.from_numpy(x).permute(2, 0, 1)[None].cuda().half(), te.unsqueeze(0), am.unsqueeze(0))[0].float().cpu().numpy()
+        d = w(torch.from_numpy(x).permute(2, 0, 1)[None].cuda().half(), te.unsqueeze(0), am.unsqueeze(0))[0][0].float().cpu().numpy()
     d = d[(d[:, 4] >= 0.5) & (d[:, 2] > d[:, 0]) & (d[:, 3] > d[:, 1])]
     d[:, [0, 2]] *= w0 / S; d[:, [1, 3]] *= h0 / S
     return d

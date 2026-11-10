@@ -1,4 +1,4 @@
-"""Run SAM3Fixed TensorRT engines (FP16, baked class 'person') on bus.jpg and draw all of them on one image (one colour per engine).
+"""Run set-classes TensorRT engines (FP16, baked class 'person') on bus.jpg and draw all of them on one image (one colour per engine).
 
     python test/infer_engine_bus.py weight/sam3_420_det_person/sam3.engine:420 weight/sam3_1008_det_person/sam3.engine:1008
 """
