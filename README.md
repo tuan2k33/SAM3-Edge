@@ -19,7 +19,7 @@ Real-time open-vocabulary detection and instance segmentation on multi-camera RT
 <summary><strong>2026-11-10</strong></summary>
 
 - **One folder less, one script less.** `SAM3Fixed/` and `SAM3Open/` are gone: a single `export.py` takes `--mode set-classes` (classes baked, the old Fixed),
-  `--mode open-text` (prompt supplied at runtime, the old Open) or `--mode prompt-free` (no text, no class) instead of the old `--mode det/seg`.
+  `--mode open-text` (prompt supplied at runtime, the old Open) or `--mode prompt-free` (no text, no class; raw masks, post-process on the host, see CLAUDE.md) instead of the old `--mode det/seg`.
   Every engine now outputs detections **and** masks (36x36 per object); the bbox-only `det` mode is removed. Engine folders: `weight/sam3_{imgsz}_set-classes_{classes}/`
   and `weight/sam3_{imgsz}_open-text/`.
 - The encoder/decoder modules and the imgsz 71/72 grid fix live once in `export.py` (applied at import, so it holds for every mode). One DeepStream plugin source
