@@ -1,4 +1,4 @@
-"""image_size not a multiple of 14 in HF SAM3 (local clone): is 430 the same as cropping the top-left 420x420 of the 430 input?
+"""image_size not a multiple of 14 in HF SAM3: is 430 the same as cropping the top-left 420x420 of the 430 input?
 
     python test/floor_imgsz.py [--size 430]
 """
@@ -6,7 +6,6 @@ import argparse, glob, os, sys
 import cv2, numpy as np, torch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.expanduser("~/Dev/projects/transformers/src"))
 from transformers import Sam3Model, Sam3Processor
 
 ap = argparse.ArgumentParser()

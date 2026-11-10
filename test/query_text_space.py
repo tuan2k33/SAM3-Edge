@@ -1,4 +1,4 @@
-"""Do SAM3's decoder object queries live in the text embedding space? (HF transformers, local clone, fp16)
+"""Do SAM3's decoder object queries live in the text embedding space? (HF transformers, fp16)
 
 Sam3DotProductScoring scores a query as  query_proj(q) . text_proj(pool(text_mlp(text)))  / 16.  So a query's projected vector
 can be compared with the projected vector of ANY text, not only the prompt it was decoded with. For each GT box (>= 2% area,
@@ -11,7 +11,6 @@ import argparse, collections, glob, os, sys
 import cv2, numpy as np, torch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.expanduser("~/Dev/projects/transformers/src"))
 from transformers import Sam3Model, Sam3Processor
 
 ap = argparse.ArgumentParser()

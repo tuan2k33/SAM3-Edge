@@ -1,4 +1,4 @@
-"""Does SAM3 (HF transformers, local clone with PR 49951) run at tiny imgsz (H = imgsz/14 = 1, 2, 3 cells)?
+"""Does SAM3 (HF transformers) run at tiny imgsz (H = imgsz/14 = 1, 2, 3 cells)?
 
 For each size the model is loaded with image_size=<size> (config override), fp16 on GPU, one random image, prompt "person".
 Where it fails (neck, decoder grid, ...) is printed. _get_coords variants: stock (i/n), pr (i/(n-1)*71/72), clamp (shipped fix).
@@ -9,7 +9,6 @@ import argparse, glob, os, sys, traceback
 import torch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.expanduser("~/Dev/projects/transformers/src"))
 from transformers import Sam3Model, Sam3Processor
 from transformers.models.sam3.modeling_sam3 import Sam3DetrDecoder
 

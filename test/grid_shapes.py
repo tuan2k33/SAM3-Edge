@@ -1,4 +1,4 @@
-"""How many cells does each SAM3 stage actually receive when image_size changes? (HF transformers, local clone, fp16)
+"""How many cells does each SAM3 stage actually receive when image_size changes? (HF transformers, fp16)
 
 Hooks print the shapes at: ViT output, FPN neck levels, DETR encoder input, DETR decoder input + spatial_shapes, and the RPB mask.
 
@@ -7,7 +7,6 @@ Hooks print the shapes at: ViT output, FPN neck levels, DETR encoder input, DETR
 import argparse, glob, os, sys
 import torch
 
-sys.path.insert(0, os.path.expanduser("~/Dev/projects/transformers/src"))
 from transformers import Sam3Model, Sam3Processor
 from transformers.models.sam3.modeling_sam3 import Sam3DetrDecoder
 
