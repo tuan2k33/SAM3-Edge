@@ -410,9 +410,9 @@ def generate_ds_config(classes, engine_path, Q=200, with_mask=False, Hm=288, Wm=
     with open(labels_path, "w") as f:
         f.write("\n".join(classes) + "\n")
 
-    # the custom nvinfer parser lives right here, next to this script
-    lib_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "libnvdsinfer_sam3.so")
+    # the custom nvinfer plugin is shared by both architectures: deepstream/ at the repo root (build it, see CLAUDE.md)
+    lib_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             "deepstream", "libnvdsinfer_sam3.so")
     class_attrs = "\n".join(
         f"[class-attrs-{i}]\npre-cluster-threshold=0.3" for i in range(nc)
     )

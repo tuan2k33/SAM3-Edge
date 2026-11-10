@@ -177,7 +177,7 @@ SAM3Open/ds9_rtsp.py  (runtime — live cameras)
 
   N× nvurisrcbin (RTSP)
     → nvstreammux → nvinfer (vision_decoder.engine, interval=5)
-        │   nvdsparsebbox_sam3.cpp's NvDsInferInitializeInputLayers reads
+        │   deepstream/nvdsparsebbox_sam3.cpp's NvDsInferInitializeInputLayers reads
         │   the snapshot files once per context load, injecting camera b's
         │   prompt encoding into batch row b -- so every camera is scored
         │   against its OWN prompt in the SAME forward pass
@@ -203,10 +203,11 @@ SAM3-Edge/
 ├── weight/                      # generated engines from BOTH architectures
 │   ├── sam3_{imgsz}_{mode}_{classes}/     # SAM3Fixed: onnx + engine + config_infer.txt + labels.txt
 │   └── sam3_{imgsz}_open/                 # SAM3Open: text_encoder.engine + vision_decoder.engine
+├── deepstream/                  # the custom nvinfer plugin shared by both architectures
+│   ├── nvdsparsebbox_sam3.cpp   # output parsers + SAM3Open's non-image input injector (build it to libnvdsinfer_sam3.so, not in git)
+│   └── test/                    # parser unit test, no DeepStream needed
 ├── SAM3Fixed/                   # classes baked at export time, runs like YOLO in nvinfer -- self-contained
 │   ├── export.py                # export SAM3 → ONNX → TRT engine (classes baked in)
-│   ├── nvdsparsebbox_sam3.cpp   # custom nvinfer output parsers
-│   ├── libnvdsinfer_sam3.so     # compiled
 │   ├── ds9_rtsp.py              # multi-cam pipeline, per-camera prompts, hot-reload
 │   ├── spec_cache.py            # union-prompt cache: build-or-reuse a weight/ engine for a class union
 │   ├── config.txt               # sources + per-camera classes for live cameras
@@ -214,8 +215,6 @@ SAM3-Edge/
 │   └── output/                  # annotated mp4 outputs
 ├── SAM3Open/                    # open-vocabulary, prompt fed as a runtime text tensor -- self-contained
 │   ├── export.py                # export text-encoder + vision-decoder engines (not baked)
-│   ├── nvdsparsebbox_sam3.cpp   # non-image input injector + output parser
-│   ├── libnvdsinfer_sam3.so     # compiled
 │   ├── ds9_rtsp.py              # multi-cam pipeline, comma-separated class list per camera, hot-reload
 │   ├── sam3open_text.py         # text encoder + non-image-input snapshot writer
 │   ├── config.txt               # sources + per-camera free-text prompts

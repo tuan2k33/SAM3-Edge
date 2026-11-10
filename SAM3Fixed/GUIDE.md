@@ -76,12 +76,12 @@ python3 ../export.py --prompt adult child phone --mode seg --imgsz 1008 --device
 
 Add `--skip-trt` to stop after ONNX export.
 
-**Recompile the custom DeepStream parser** after editing `nvdsparsebbox_sam3.cpp`:
+**Build the custom DeepStream plugin** (shared by both architectures, source in `../deepstream/`; see the root `CLAUDE.md`):
 
 ```bash
-g++ -shared -fPIC -O2 -o libnvdsinfer_sam3.so nvdsparsebbox_sam3.cpp \
-    -I/opt/nvidia/deepstream/deepstream/sources/includes \
-    -I/usr/local/cuda-13.2/targets/x86_64-linux/include -std=c++14
+cd ../deepstream && g++ -shared -fPIC -O2 -std=c++20 -o libnvdsinfer_sam3.so nvdsparsebbox_sam3.cpp \
+    -I/opt/nvidia/deepstream/deepstream/includes \
+    -I/usr/local/cuda-13.2/targets/x86_64-linux/include
 ```
 
 ---

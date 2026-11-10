@@ -32,6 +32,9 @@ build/
 # pipeline output videos
 output/
 
+# compiled nvinfer plugin (build it from deepstream/nvdsparsebbox_sam3.cpp)
+*.so
+
 # downloaded test data
 test/data/
 test/coco_vis/

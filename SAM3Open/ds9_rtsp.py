@@ -63,7 +63,7 @@ def _config_imgsz():
 IMGSZ = _config_imgsz()  # must match the imgsz vision_decoder.engine was exported with (read once at startup)
 OPEN_DIR = sam3open_text.open_dir_for(IMGSZ)  # ../weight/sam3_{imgsz}_open/
 VISION_ENGINE = os.path.join(OPEN_DIR, "vision_decoder.engine")
-LIB_PATH = str(_HERE / "libnvdsinfer_sam3.so")
+LIB_PATH = str(_HERE.parent / "deepstream" / "libnvdsinfer_sam3.so")  # shared plugin, see CLAUDE.md to build it
 INFER_CONFIG_PATH = os.path.join(OPEN_DIR, "config_infer.txt")
 
 
