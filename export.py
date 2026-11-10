@@ -471,6 +471,8 @@ def run_trtexec(onnx_path, engine_path, shapes, extra_args=()):
         if shapes:  # a static model (prompt-free) takes no explicit shapes
             cmd.append(f"{flag}=" + ",".join(f"{n}:{v[idx]}" for n, v in shapes.items()))
     cmd += extra_args
+    if not any(a.startswith("--timingCacheFile") for a in extra_args):  # the ViT is the same in every engine of an imgsz: 110 s -> 42 s on a rebuild
+        cmd.append(f"--timingCacheFile={os.path.join(ROOT, 'weight', 'timing.cache')}")
     print(f"\n[TRT] {' '.join(cmd)}\n", flush=True)
     t0 = time.perf_counter()
     if subprocess.run(cmd).returncode != 0:

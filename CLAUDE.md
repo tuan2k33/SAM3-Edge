@@ -22,6 +22,8 @@ Always run and test in FP16 — TensorRT engines and PyTorch tests/benchmarks al
 
 TensorRT 11 is strongly typed: `trtexec` has no `--fp16`, the engine precision is the dtype in the ONNX. `export.py` exports the FP32 graph (sdpa) and converts it with `onnx_to_fp16` (onnxconverter-common, input and output become fp16 too; no shape inference because it needs ~7 GB RAM, so leftover `Cast(to=fp32)` nodes are patched there), for the `set-classes` engine and for both `open-text` engines (`sam3open_text.py` and the plugin read fp16 text features). Engine `person` @420: 100/106 boxes, IoU 0.829, ~76 ms/frame, same accuracy as the old `--fp16` engines. Exporting a `.half()` model with `attn_implementation="eager"` also works (~69 ms) but sdpa's ONNX symbolic breaks an fp16 graph (fp32 mask constants).
 
+`run_trtexec` passes `--timingCacheFile=weight/timing.cache` (unless `--trt-args` sets its own): a rebuild reuses the tactics timed before (the ViT part of a build went 110 s -> 42 s), delete the file after a TensorRT or driver change.
+
 Set `HF_HUB_OFFLINE=1` when exporting from the local HF cache: the `[Load]` step drops from 20-36 min to ~15 s. The machine has 7 GB RAM; the export process can be OOM-killed while `trtexec` runs (the child keeps going, check `sam3.engine`).
 
 ## Common commands
