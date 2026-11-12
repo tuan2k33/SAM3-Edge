@@ -43,7 +43,7 @@ from pyservicemaker import Pipeline, BatchMetadataOperator, Probe
 
 import spec_cache
 
-TRACKER_LIB = "/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so"
+TRACKER_LIB = os.environ.get("DS_ROOT", "/opt/nvidia/deepstream/deepstream") + "/lib/libnvds_nvmultiobjecttracker.so"
 CONFIG_PATH = Path(os.environ.get("DS_CONFIG", str(_HERE / "config_set_classes.txt")))
 
 
@@ -66,6 +66,7 @@ def read_config():
     cfg.read(CONFIG_PATH)
     sources = [s.strip() for s in cfg.get("sources", "urls").strip().splitlines() if s.strip()]
     imgsz = cfg.getint("model", "imgsz", fallback=1008)
+    imgsz -= imgsz % 14  # as export.py does
     conf = cfg.getfloat("model", "conf", fallback=0.4)
     default_classes = [c.strip() for c in cfg.get("model", "classes", fallback="object").split(",") if c.strip()]
 
@@ -230,7 +231,7 @@ def build_pipeline(sources, width, height, infer_interval, infer_config, flt, ou
     # so "ffmpeg -v error" reports 0 errors -- only visual inspection
     # catches it). idrinterval is also required explicitly; iframeinterval
     # alone gets ignored. nvh264enc/nvcudah264enc don't work at all with a
-    # DeepStream hardware-decode source on this GPU/driver -- see CLAUDE.md.
+    # DeepStream hardware-decode source on this GPU/driver -- see docs/NOTES.md section 9.
     p.add("nvvideoconvert", "conv2", {})
     p.link("osd", "conv2")
     p.add("capsfilter", "caps_sys", {"caps": "video/x-raw(memory:NVMM),format=NV12"})
@@ -275,7 +276,7 @@ def watcher_thread(imgsz, conf, n_cams, pipeline, flt, active_union_box, stop_ev
         time.sleep(0.3)  # let the editor finish writing (avoid reading a half-written file)
 
         try:
-            _, _, _, _, camera_prompts, _ = read_config()
+            _, _, _, camera_prompts, _ = read_config()
         except Exception as e:
             print(f"[watcher] error reading config: {e}", flush=True)
             continue

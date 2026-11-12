@@ -3,12 +3,15 @@
 Production DeepStream 9 RTSP pipeline for the open-text (dynamic-prompt)
 architecture -- each camera gets its own comma-separated class list, ONE
 shared nvinfer element (vision_decoder.engine) scores every camera's frame
-against its own classes in the SAME batched forward pass: each class is
-encoded to its own text embedding and injected into slot k of batch row b
-(camera b) as a non-image input layer (see nvdsparsebbox_sam3.cpp +
-sam3open_text.py). Inside the graph the ViT runs once per image and the K_MAX
-slots ride the batch axis through the DETR decoder; detections carry the
-slot index as cls_id. No engine rebuild when a prompt changes.
+in the SAME batched forward pass against the union of all cameras' classes:
+each class of the union is encoded to its own text embedding and injected
+into slot k of every batch row as a non-image input layer (see
+nvdsparsebbox_sam3.cpp + sam3open_text.py); PromptLabeler then keeps, per
+camera, the detections of that camera's own classes. (The rows all carry the
+same slots because nvstreammux does not keep camera b in batch row b.) Inside
+the graph the ViT runs once per image and the K_MAX slots ride the batch axis
+through the DETR decoder; detections carry the slot index as cls_id. No
+engine rebuild when a prompt changes.
 
 Prompts are hot-reloadable: edit config.txt while running and the pipeline
 re-encodes any new prompt (../weight/sam3_{imgsz}_open-text/text_encoder.engine,
@@ -18,7 +21,7 @@ NvDsInferInitializeInputLayers, verified empirically) -- no GStreamer
 restart, and unlike the set-classes hot-reload, no TensorRT engine rebuild at
 all, since the engine itself never changes.
 
-Limit: at most K_MAX classes per camera (sam3open_text.K_MAX, baked into the
+Limit: at most K_MAX different classes over all cameras (sam3open_text.K_MAX, baked into the
 engine at export time via export.py --mode open-text --k-max); decoder cost is paid for all
 K_MAX slots of every camera whether used or not.
 
@@ -50,20 +53,21 @@ from pyservicemaker import Pipeline, BatchMetadataOperator, Probe
 
 import sam3open_text
 
-TRACKER_LIB = "/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so"
+TRACKER_LIB = os.environ.get("DS_ROOT", "/opt/nvidia/deepstream/deepstream") + "/lib/libnvds_nvmultiobjecttracker.so"
 CONFIG_PATH = Path(os.environ.get("DS_CONFIG", str(_HERE / "config_open_text.txt")))
 
 
 def _config_imgsz():
     cfg = configparser.ConfigParser()
     cfg.read(CONFIG_PATH)
-    return cfg.getint("model", "imgsz", fallback=1008)
+    imgsz = cfg.getint("model", "imgsz", fallback=1008)
+    return imgsz - imgsz % 14  # as export.py does
 
 
 IMGSZ = _config_imgsz()  # must match the imgsz vision_decoder.engine was exported with (read once at startup)
 OPEN_DIR = sam3open_text.open_dir_for(IMGSZ)  # ../weight/sam3_{imgsz}_open-text/
 VISION_ENGINE = os.path.join(OPEN_DIR, "vision_decoder.engine")
-LIB_PATH = str(_HERE / "libnvdsinfer_sam3.so")  # built from nvdsparsebbox_sam3.cpp, see CLAUDE.md
+LIB_PATH = str(_HERE / "libnvdsinfer_sam3.so")  # built from nvdsparsebbox_sam3.cpp, see GUIDE.md
 INFER_CONFIG_PATH = os.path.join(OPEN_DIR, "config_infer.txt")
 
 
@@ -95,9 +99,10 @@ def read_config():
         camera_prompts[i] = sam3open_text.split_classes(cfg.get(sec, "prompt"))
         if not camera_prompts[i]:
             sys.exit(f"ERROR: config.txt [{sec}]/prompt has no class")
-        if len(camera_prompts[i]) > sam3open_text.K_MAX:
-            sys.exit(f"ERROR: [{sec}] has {len(camera_prompts[i])} classes > K_MAX={sam3open_text.K_MAX} "
-                      f"(vision_decoder.engine's class slots -- re-export with a bigger --k-max)")
+    union = sam3open_text.union_classes(camera_prompts)
+    if len(union) > sam3open_text.K_MAX:
+        sys.exit(f"ERROR: the cameras ask for {len(union)} different classes {union} > K_MAX={sam3open_text.K_MAX} "
+                  f"(vision_decoder.engine's class slots, shared by all cameras -- re-export with a bigger --k-max)")
 
     pcfg = dict(
         width=cfg.getint("pipeline", "width", fallback=1280),
@@ -126,7 +131,7 @@ net-scale-factor=0.00784313725490196
 offsets=127.5;127.5;127.5
 model-color-format=0
 
-network-mode=1
+network-mode=2
 process-mode=1
 network-type=3
 segmentation-threshold=0.5
@@ -136,7 +141,7 @@ cluster-mode=4
 gie-unique-id=2
 
 # detections [K_MAX*200,6] fp16  x1 y1 x2 y2 score cls_id (pixel units;
-# cls_id = the camera's class slot, see nvdsparsebbox_sam3.cpp)  masks [K_MAX*200,36,36] fp16
+# cls_id = the slot in the union of all cameras' classes, see nvdsparsebbox_sam3.cpp)  masks [K_MAX*200,36,36] fp16
 output-blob-names=detections;masks
 
 parse-bbox-instance-mask-func-name=NvDsInferParseSAM3Full
@@ -149,9 +154,10 @@ pre-cluster-threshold={conf}
 
 
 class PromptLabeler(BatchMetadataOperator):
-    """classId is the camera's class slot (open-vocab has no fixed label
-    vocabulary) -- sets the display label from that camera's own current class
-    list. Classes can be updated LIVE by the watcher thread, guarded by a Lock
+    """classId is a slot of the union of all cameras' classes (every batch row
+    is scored against the same union, see sam3open_text.write_snapshot) -- keeps
+    the detections of the camera's own classes and labels them, hides the rest.
+    Classes can be updated LIVE by the watcher thread, guarded by a Lock
     since handle_metadata() runs on GStreamer's own thread."""
 
     def __init__(self, camera_prompts):
@@ -170,6 +176,7 @@ class PromptLabeler(BatchMetadataOperator):
     def handle_metadata(self, batch_meta):
         with self.lock:
             prompts = self.prompts
+        union = sam3open_text.union_classes(prompts)
         for frame_meta in batch_meta.frame_items:
             cam = frame_meta.pad_index
             classes = prompts.get(cam, [])
@@ -179,7 +186,13 @@ class PromptLabeler(BatchMetadataOperator):
             for obj in frame_meta.object_items:
                 conf = float(obj.confidence)
                 cls = int(obj.class_id)
-                name = classes[cls] if 0 <= cls < len(classes) else "?"
+                name = union[cls] if 0 <= cls < len(union) else "?"
+                if name not in classes:  # another camera's class
+                    obj.rect_params.border_width = 0
+                    obj.rect_params.has_bg_color = 0
+                    obj.text_params.display_text = ""
+                    obj.text_params.set_bg_clr = 0  # clearing the text alone leaves its black background box
+                    continue
                 shown = conf if conf > 0.05 else prev.get(obj.object_id)
                 cur[obj.object_id] = shown
                 obj.text_params.display_text = f"{name} {shown:.2f}" if shown else name
@@ -246,7 +259,7 @@ def build_pipeline(sources, width, height, infer_interval, infer_config, lbl, ou
     p.add("nvdsosd", "osd", {"process-mode": 0, "display-text": True, "display-mask": True})
     p.link("conv1", "osd")
 
-    # Same encoder gotchas as ds9_set_classes.py -- see CLAUDE.md.
+    # Same encoder gotchas as ds9_set_classes.py -- see docs/NOTES.md section 9.
     p.add("nvvideoconvert", "conv2", {})
     p.link("osd", "conv2")
     p.add("capsfilter", "caps_sys", {"caps": "video/x-raw(memory:NVMM),format=NV12"})
@@ -294,8 +307,12 @@ def watcher_thread(encoder, conf, pipeline, lbl, active_prompts_box, stop_event)
 
         print(f"\n[watcher] config.txt change -> prompts={camera_prompts}", flush=True)
         t0 = time.time()
-        sam3open_text.write_snapshot(encoder, camera_prompts)
         lbl.update(camera_prompts)
+        union = sam3open_text.union_classes(camera_prompts)
+        if union == sam3open_text.union_classes(active_prompts_box[0]):  # only who wants which class moved: no reload
+            active_prompts_box[0] = camera_prompts
+            continue
+        sam3open_text.write_snapshot(encoder, union)
         try:
             pipeline["infer"].set({"config-file-path": INFER_CONFIG_PATH})
             print(f"[watcher] triggered context reload ({time.time()-t0:.2f}s)", flush=True)
@@ -312,7 +329,7 @@ def main():
     print(f"[open] {len(sources)} cams  prompts={camera_prompts}")
 
     encoder = sam3open_text.TextEncoder(os.path.join(OPEN_DIR, "text_encoder.engine"))
-    sam3open_text.write_snapshot(encoder, camera_prompts)
+    sam3open_text.write_snapshot(encoder, sam3open_text.union_classes(camera_prompts))
     infer_config = write_infer_config(len(sources), conf)
     print(f"[open] snapshot written, infer config: {infer_config}")
 

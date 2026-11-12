@@ -5,13 +5,13 @@
  *
  *   NvDsInferParseSAM3Det      detections [N,6]            x1 y1 x2 y2 score cls_id   (set-classes, box only)
  *   NvDsInferParseSAM3Full     detections [N,6] + masks [N,Hm,Wm] probabilities       (set-classes, with masks)
- *   NvDsInferParseSam3OpenDet  detections [N,6]            (open-text; N = K slots * 200, cls_id = the camera's class slot)
+ *   NvDsInferParseSam3OpenDet  detections [N,6]            (open-text; N = K slots * 200, cls_id = the slot in the union of all cameras' classes)
  *   NvDsInferInitializeInputLayers   injects text_features [K,32,256] (the layer's dtype, fp16) + text_mask [K,32] u8 as non-image input layers (open-text)
  *
  * Detections and masks are read as float32 or float16 according to the layer's own dataType.
  * N = num_classes * Q (Q = 200), cls_id for query i is i / Q.
  *
- * open-text injection: one row per camera slot (K class slots per row), read from two flat snapshot files written by sam3open_text.py;
+ * open-text injection: one row per batch slot (K class slots per row, the same in every row), read from two flat snapshot files written by sam3open_text.py;
  * the row size comes from the layer dims, so K_MAX is not hardcoded here:
  *     /dev/shm/sam3open_text_features.bin   MAX_SOURCES x K x 32 x 256  f16 (the engine's dtype: the bytes are copied as they are)
  *     /dev/shm/sam3open_text_mask.bin       MAX_SOURCES x K x 32        u8   (TensorRT reports BOOL, DeepStream maps it to UINT8)

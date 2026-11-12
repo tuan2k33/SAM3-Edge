@@ -12,9 +12,9 @@ nvinfer context (re)load:
     /dev/shm/sam3open_text_features.bin   MAX_SOURCES x K_MAX x 32 x 256  float16
     /dev/shm/sam3open_text_mask.bin       MAX_SOURCES x K_MAX x 32        uint8
 
-Row b = camera b; slot k = its k-th class (a camera's prompt is a comma-
-separated class list). Unused cameras/slots stay zero: a slot whose mask is
-all zero scores 0 inside the graph, so it never produces detections.
+Every row holds the same K slots: slot k = the k-th class of the union of all cameras' classes (a camera's
+prompt is a comma-separated class list; the pipeline keeps each camera's own classes by cls_id). Unused slots
+stay zero: a slot whose mask is all zero scores 0 inside the graph, so it never produces detections.
 
 MAX_SOURCES must match vision_decoder.engine's max optimization-profile
 batch (currently 4 -- see export.py --mode open-text / the --max-batch used at
@@ -85,25 +85,21 @@ def split_classes(prompt: str):
     return [c.strip() for c in prompt.split(",") if c.strip()]
 
 
-def write_snapshot(encoder: TextEncoder, camera_classes: dict):
-    """camera_classes: dict cam_id (0..MAX_SOURCES-1) -> list of class strings.
-    Cameras not present, or with index >= MAX_SOURCES, are left zeroed.
-    Files must be fully written BEFORE the nvinfer context that reads them
-    is (re)loaded -- the caller triggers that load/reload AFTER this
-    returns (pipeline.start() the first time, nvinfer.set({"config-file-path":
-    ...}) on later prompt changes)."""
+def union_classes(camera_classes: dict):
+    """Every class any camera asks for, once, in first-seen order: the list every batch row is scored against."""
+    return list(dict.fromkeys(c for cam in sorted(camera_classes) for c in camera_classes[cam]))
+
+
+def write_snapshot(encoder: TextEncoder, classes: list):
+    """classes: the union of every camera's classes (at most K_MAX). Every row gets the same K slots: nvstreammux does not keep
+    camera b in batch row b, so a per-row prompt scored cameras against each other's classes; the pipeline filters by camera afterwards.
+    Files must be fully written BEFORE the nvinfer context that reads them is (re)loaded -- the caller triggers that load/reload AFTER this
+    returns (pipeline.start() the first time, nvinfer.set({"config-file-path": ...}) on later prompt changes)."""
+    assert len(classes) <= K_MAX, f"{len(classes)} classes > K_MAX={K_MAX}"
     feat_full = np.zeros((MAX_SOURCES, K_MAX, CTX_LEN, FEAT_DIM), dtype=np.float16)
     mask_full = np.zeros((MAX_SOURCES, K_MAX, CTX_LEN), dtype=np.uint8)
-    for cam, classes in camera_classes.items():
-        if cam >= MAX_SOURCES:
-            print(f"[sam3open_text] WARNING: cam{cam} exceeds MAX_SOURCES={MAX_SOURCES}, ignored")
-            continue
-        if len(classes) > K_MAX:
-            print(f"[sam3open_text] WARNING: cam{cam} has {len(classes)} classes > K_MAX={K_MAX}, extra ignored")
-        for k, cls in enumerate(classes[:K_MAX]):
-            feat, mask = encoder.encode(cls)
-            feat_full[cam, k] = feat
-            mask_full[cam, k] = mask
+    for k, cls in enumerate(classes):
+        feat_full[:, k], mask_full[:, k] = encoder.encode(cls)
     feat_full.tofile(SNAPSHOT_FEATURES)
     mask_full.tofile(SNAPSHOT_MASK)
     with open(SNAPSHOT_META, "w") as f:
