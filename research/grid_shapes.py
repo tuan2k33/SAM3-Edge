@@ -2,7 +2,7 @@
 
 Hooks print the shapes at: ViT output, FPN neck levels, DETR encoder input, DETR decoder input + spatial_shapes, and the RPB mask.
 
-    python test/grid_shapes.py [--sizes 420 700 1008 430]
+    python research/grid_shapes.py [--sizes 420 700 1008 430]
 """
 import argparse, glob, os, sys
 import torch

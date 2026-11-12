@@ -4,7 +4,7 @@ Same setup as collect_box_pairs.py (oracle prompts: the <= 4 COCO classes with a
 NMS 0.6, first --nimg usable images, eager fp16), but every box is drawn instead of paired. The raw pairs in
 results_pairs/ carry no image id, so the forward passes are rerun (about a minute per size).
 
-    HF_TOKEN=... python test/render_coco.py [--sizes 420 700] [--nimg 64] [--skip 0]   # -> test/coco_vis/<size>/<image>.jpg
+    HF_TOKEN=... python research/render_coco.py [--sizes 420 700] [--nimg 64] [--skip 0]   # -> research/coco_vis/<size>/<image>.jpg
 """
 import argparse, collections, glob, importlib.util, os, sys
 import cv2, numpy as np, torch
@@ -12,12 +12,13 @@ import cv2, numpy as np, torch
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
 import export as E
+E.BOX_SIZE_FIX = False   # this script applies its own box-size variants
 OE = E   # export.py holds the set-classes and the text-as-input wrappers
 from transformers.models.sam3 import Sam3Model, Sam3Processor
 from transformers.models.sam3.modeling_sam3 import Sam3DetrDecoder
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--coco", default=os.path.join(HERE, "data", "coco128"))
+ap.add_argument("--coco", default=os.path.join(HERE, "..", "test", "data", "coco128"))
 ap.add_argument("--sizes", nargs="+", type=int, default=[420, 700])
 ap.add_argument("--nimg", type=int, default=64)
 ap.add_argument("--skip", type=int, default=0)

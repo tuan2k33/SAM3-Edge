@@ -1,6 +1,6 @@
 # Boxes shrink when SAM3 runs at `imgsz` != 1008: research log
 
-Updated: 2026-10-24. Status: the `71/72` grid is shipped in `export.py` (then `SAM3Fixed/export.py` and `SAM3Open/export.py`, now merged into `export.py`); the `sineq` query-box scale (steps 9-11) was **removed from the export scripts for further research** (it stays in `test/` as a variant). Engines built before 2026-10-24 may still contain it.
+Updated: 2026-11-12. Status: both fixes are shipped in `export.py`: the `71/72` grid (2026-10-23) and the box-size patch `w, h x H/72` (the size-only form of `sineq`, 2026-11-12, after steps 12-13). Between 2026-10-24 and 2026-11-12 only the grid was shipped; engines from then have narrow boxes.
 Background: the starting point was the hypothesis "bug in `_get_coords`" (an earlier single-image bus experiment, removed from the repo, still in git history). This file re-checks that hypothesis against ground truth and looks for the real cause.
 
 ## 0. Summary
@@ -10,7 +10,7 @@ Background: the starting point was the hypothesis "bug in `_get_coords`" (an ear
 - It **lives in the decoder** (step 8: with the encoder at H=72 and the decoder at a small H the shrink comes back intact).
 - Inside the decoder, the **sine encoding of the query boxes** is what matters: multiplying the box coordinates by `H/72` before it (`sineq`) cuts the **slope over H about 4x** (width +2.04 -> +0.51 %/10 cells) and squeezes the error **at every size from 336 to 1260** into about -4.6% ... +0.4% (original: -13.1% ... +1.5%), with no change at 1008 and unchanged recall. An exponent sweep gives a smooth, monotonic dose-response at 420, 700 and 1260. The zero crossing is not at one fixed exponent (0.34-1.49 depending on size and axis), so `H/72` is a good approximation, not an exact formula.
 - The `71/72` grid is **not the root cause**: it mostly shifts the box (centre) and does not fix its size; at 1008 it is a no-op. It is still useful to centre the box when used together with `sineq`.
-- **Decision (2026-10-23):** `sineq` with `a = 1` (factor `H/72`) + grid `arange/(H-1)*71/72`; step 11 has held-out numbers and a real TensorRT FP16 engine. **Update (2026-10-24):** `sineq` is not shipped for now (mechanism and exponent unexplained), only the grid is.
+- **Decision (2026-10-23):** `sineq` with `a = 1` (factor `H/72`) + grid `arange/(H-1)*71/72`; step 11 has held-out numbers and a real TensorRT FP16 engine. **Update (2026-10-24):** `sineq` is not shipped for now (mechanism and exponent unexplained), only the grid is. **Update (2026-11-12):** steps 12-13 ground it (only the width and height matter; mis-scaling the size at 1008 reproduces the shrink), and the size-only form `w, h x H/72` is shipped in `export.py` next to the grid. Real engines at 420 on COCO val2017: AP@0.5 0.487 -> 0.653.
 
 ## 0b. Rejected directions (raw results removed, rerun with `collect_box_pairs.py`)
 
@@ -258,9 +258,48 @@ Matches the eager table: the patch is baked correctly into ONNX and TensorRT FP1
 
 The grid alone fixes the height roughly but leaves the width short; `sineq` closes it.
 
+### Step 12. Does `sineq` act through the box centre or the box size? (2026-11-12)
+
+`encode_boxes` embeds (cx, cy, w, h). Two variants scale only half of them by `H/72`: `sineqxy` (centre) and `sineqwh` (size). First 64 images, grid 71/72 in all rows:
+
+| size | variant | pairs | mean IoU | width % | height % |
+|---|---|---|---|---|---|
+| 420 | `71/72` | 192 | 0.824 | -9.05 ± 0.65 | -3.76 ± 0.73 |
+| 420 | `sineq+71/72` | 193 | 0.868 | -2.28 ± 0.66 | +0.26 ± 0.70 |
+| 420 | **`sineqwh+71/72`** | 195 | 0.866 | **-2.11 ± 0.65** | +0.44 ± 0.72 |
+| 420 | `sineqxy+71/72` | 187 | 0.823 | -9.53 ± 0.67 | -3.86 ± 0.74 |
+| 700 | `71/72` | 202 | 0.885 | -4.93 ± 0.47 | -1.93 ± 0.54 |
+| 700 | `sineq+71/72` | 201 | 0.906 | -2.20 ± 0.51 | -0.10 ± 0.58 |
+| 700 | **`sineqwh+71/72`** | 202 | 0.906 | **-2.13 ± 0.45** | -0.32 ± 0.58 |
+| 700 | `sineqxy+71/72` | 200 | 0.886 | -4.89 ± 0.49 | -1.84 ± 0.54 |
+
+Reading: **the whole effect of `sineq` is in the width and height channels.** Scaling the centre changes nothing. The decoder's size refinement is conditioned on the size the query believes it has, and that size is read in feature cells (a box of normalized width w covers w*H cells; the head was trained where that was w*72). The centre embedding plays no part in the shrink, so the axis-dependent best exponent of step 10 is a property of the size channels alone.
+
+### Step 13. A prediction from the trained size alone: break the relation on purpose at 1008 (2026-11-12)
+
+If step 12 is right, the shrink at grid H is not about small images at all: it is what the trained decoder does whenever the size it is told (the w, h embedding) and the size it sees (the cells the object covers) disagree by 72/H. At 1008 the two agree. So the claim can be tested **inside the training distribution**, with nothing fitted at other sizes: run at 1008 and multiply the embedded width and height by f = 72/H (`sineqwhf<f>`). That should reproduce the error of grid H.
+
+Change against the 1008 baseline (width -1.10%, height -0.22%, which is the bias of the labels), first 64 images:
+
+| mimics grid H (imgsz) | f = 72/H | at 1008 with the size mis-scaled: width / height | measured at that imgsz (grid 71/72): width / height | share reproduced |
+|---|---|---|---|---|
+| 90 (1260) | 0.8 | **+1.55 / +0.98** | +1.69 / +1.76 (orig grid) | 92% / 56% |
+| 60 (840) | 1.2 | **-1.30 / -0.88** | -1.40 / -0.68 | 93% / 129% |
+| 50 (700) | 1.44 | **-2.75 / -1.66** | -3.83 / -1.71 | 72% / 97% |
+| 30 (420) | 2.4 | **-5.50 / -2.99** | -7.95 / -3.54 | 69% / 84% |
+| 24 (336) | 3.0 | **-6.61 / -3.42** | -12.0 / -7.1 (orig grid) | 55% / 48% |
+
+(errors are about ±0.5 on every number.)
+
+Reading:
+- The sign, the monotonic shape and most of the size of the effect come out of the 1008 model alone, including the **growth** for H > 72. The shrink is the decoder's trained response to a size embedding that no longer matches the cells: about -6 to -7% of width per unit of ln(f).
+- This is what makes `sineq` a geometry fix of the same kind as the 71/72 grid, and not a tuned constant: **the decoder was trained with exactly one relation between a box's normalized size and the number of feature cells it covers (72 cells per unit). `sineqwh` restores that relation at grid H: the size told to the query is the box's size in cells divided by 72, i.e. w x H/72.** The factor is the ratio of the two grids, with exponent 1 by construction.
+- It also explains two things that looked like tuning in step 10. The best exponent "moved" between 0.34 and 1.49 because the response is weak (a few % per unit of ln f) while the target, zero error against ground truth, is itself off by the 1% label bias: a 1% offset moves the zero crossing by 0.2-0.5 in the exponent. And the residual -2% after `sineq` is mostly that same bias (1008 itself reads -1.1%).
+- Not everything is explained: below H = 50 the mis-scaling at 1008 reproduces 55-85% of the shrink, so a second, smaller effect remains at small grids (after `sineq` it is the ~1% left beyond the label bias at 420).
+
 ## 4. Open questions
 
-- **Mechanism.** Why does multiplying the box coordinates by `H/72` in the query sine encoding make box size right? Only empirical evidence so far (smooth dose-response, right direction at 3 sizes, no-op at 1008), no explanation. The zero crossing changes with size and axis (a ~ 0.34-1.49), so `H/72` is a good approximation, not necessarily the right formula.
+- **Mechanism.** Why does multiplying the box coordinates by `H/72` in the query sine encoding make box size right? Step 12 narrows it to the width/height channels (the centre channels do nothing): the size the query believes it has is read in cells. Step 13 reproduces most of the effect at 1008 by mis-scaling the size on purpose, which grounds the factor `H/72`. What is left: the part of the shrink below H = 50 that the mis-scaling does not reproduce (15-45%), and which layer consumes the size (the `ref_point_head` output added to the queries in self- and cross-attention) is not traced. Otherwise only empirical evidence so far (smooth dose-response, right direction at 3 sizes, no-op at 1008), no explanation. The zero crossing changes with size and axis (a ~ 0.34-1.49), so `H/72` is a good approximation, not necessarily the right formula.
 - A residual width shrink of ~2-3% at 504-840 after `sineq`, and slightly negative x1, y1 (-0.16, -0.30 patch at 336). A small additional correction could be combined, to be tested.
 - Validation on more data (only 64 images so far, COCO labels are noisy) and on boxes smaller than 2% of the image (excluded here).
 - Exponents above 1.5 were only run at 420.
@@ -271,9 +310,9 @@ From the repo root, needs `HF_TOKEN` in `.env` and coco128 in `test/data/coco128
 
 ```bash
 # collect (each (size, variant) is saved as soon as it finishes)
-python -u test/collect_box_pairs.py --sizes 420,700 --variants orig,71/72,sineq,sineq+71/72   # rejected variants: see section 0b and the docstring
+python -u research/collect_box_pairs.py --sizes 420,700 --variants orig,71/72,sineq,sineq+71/72   # rejected variants: see section 0b and the docstring
 # analyse (CPU)
-python test/analyze_box_pairs.py
+python research/analyze_box_pairs.py
 ```
 
-Variants and size syntax: see the docstring of `collect_box_pairs.py`. Raw results: `test/results_pairs/*.json`.
+Variants and size syntax: see the docstring of `collect_box_pairs.py`. Raw results: `research/results_pairs/*.json`.

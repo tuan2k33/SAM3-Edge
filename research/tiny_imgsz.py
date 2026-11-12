@@ -3,7 +3,7 @@
 For each size the model is loaded with image_size=<size> (config override), fp16 on GPU, one random image, prompt "person".
 Where it fails (neck, decoder grid, ...) is printed. _get_coords variants: stock (i/n), pr (i/(n-1)*71/72), clamp (shipped fix).
 
-    python test/tiny_imgsz.py [--sizes 14 28 42 420] [--variants stock pr clamp]
+    python research/tiny_imgsz.py [--sizes 14 28 42 420] [--variants stock pr clamp]
 """
 import argparse, glob, os, sys, traceback
 import torch

@@ -5,7 +5,7 @@ can be compared with the projected vector of ANY text, not only the prompt it wa
 coco128, first 64 usable images) take the query whose box has the best IoU (>= 0.5) with it, and classify that query among the
 80 COCO names by the same dot product. The decoding prompt is varied (generic words and the oracle class names), chance = 1/80.
 
-    HF_HUB_OFFLINE=1 python test/query_text_space.py
+    HF_HUB_OFFLINE=1 python research/query_text_space.py
 """
 import argparse, collections, glob, os, sys
 import cv2, numpy as np, torch
@@ -14,7 +14,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 from transformers import Sam3Model, Sam3Processor
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--coco", default=os.path.join(HERE, "data", "coco128"))
+ap.add_argument("--coco", default=os.path.join(HERE, "..", "test", "data", "coco128"))
 ap.add_argument("--imgsz", type=int, default=1008)
 ap.add_argument("--nimg", type=int, default=64)
 args = ap.parse_args()

@@ -4,7 +4,7 @@ Runs the engine itself (TensorRT, FP16) on every coco128 image that has a 'perso
 image, and reports the same quantities as analyze_box_pairs.py (mean width/height error in %, centre error in
 patches, recall@0.5, mean IoU). Use it to check that the fixes in export.py really end up in the engine.
 
-    python test/eval_engine_person.py weight/sam3_420_det_person/sam3_new.engine 420 [--set first|held|all]
+    python research/eval_engine_person.py weight/sam3_420_set-classes_person/sam3_new.engine 420 [--set first|held|all]
 """
 import argparse, glob, os
 import cv2, numpy as np, tensorrt as trt, torch
@@ -12,7 +12,7 @@ import cv2, numpy as np, tensorrt as trt, torch
 HERE = os.path.dirname(os.path.abspath(__file__))
 ap = argparse.ArgumentParser()
 ap.add_argument("engine"); ap.add_argument("imgsz", type=int)
-ap.add_argument("--coco", default=os.path.join(HERE, "data", "coco128"))
+ap.add_argument("--coco", default=os.path.join(HERE, "..", "test", "data", "coco128"))
 ap.add_argument("--set", choices=["first", "held", "all"], default="all")
 args = ap.parse_args()
 
@@ -27,6 +27,9 @@ dt = {trt.float32: torch.float32, trt.float16: torch.float16}
 inp = torch.zeros((1, 3, S, S), dtype=dt[eng.get_tensor_dtype("pixel_values")], device="cuda")
 out = torch.zeros(tuple(ctx.get_tensor_shape(out_name)), dtype=dt[eng.get_tensor_dtype(out_name)], device="cuda")
 ctx.set_tensor_address("pixel_values", inp.data_ptr()); ctx.set_tensor_address(out_name, out.data_ptr())
+rest = [torch.zeros(tuple(ctx.get_tensor_shape(m)), dtype=torch.float16, device="cuda") for m in names if m == "masks"]
+for t in rest:
+    ctx.set_tensor_address("masks", t.data_ptr())  # every engine also outputs masks since 2026-11-10
 stream = torch.cuda.Stream()
 
 

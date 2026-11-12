@@ -1,9 +1,9 @@
 """bus.jpg, 'person' + 'bus': before (original decoder) / shipped (71/72 grid) / 71/72 + sineq (research) / reference, one image per imgsz.
 
 bus.jpg has no ground-truth labels: the reference (blue) is the shipped model at 1008, the resolution it was trained at
-(on COCO it matches GT to ~1% in box size, see BOX_SHRINK_INVESTIGATION.md). Eager fp16, one wrapper per imgsz.
+(on COCO it matches GT to ~1% in box size, see BOX_SHRINK.md). Eager fp16, one wrapper per imgsz.
 
-    HF_TOKEN=... python test/compare_bus.py [--sizes 420 700]
+    HF_TOKEN=... python research/compare_bus.py [--sizes 420 700]
 """
 import argparse, importlib.util, os, sys
 import cv2, numpy as np, torch
@@ -11,6 +11,7 @@ import cv2, numpy as np, torch
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
 import export as E
+E.BOX_SIZE_FIX = False   # this script applies its own box-size variants
 OE = E   # export.py holds the set-classes and the text-as-input wrappers
 from transformers.models.sam3 import Sam3Model, Sam3Processor
 from transformers.models.sam3.modeling_sam3 import Sam3DetrDecoder
@@ -30,7 +31,7 @@ model = Sam3Model.from_pretrained("facebook/sam3", token=tok).half().to("cuda").
 proc = Sam3Processor.from_pretrained("facebook/sam3", token=tok)
 CLASSES = ["person", "bus"]
 te, am = E.encode_concepts(model, proc, CLASSES); te, am = te.cuda(), (am > 0).cuda()
-img = cv2.imread(os.path.join(HERE, "bus.jpg")); h0, w0 = img.shape[:2]
+img = cv2.imread(os.path.join(HERE, "..", "test", "bus.jpg")); h0, w0 = img.shape[:2]
 
 
 def run(S, shipped, sineq=False):

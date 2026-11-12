@@ -14,7 +14,7 @@ clipped to the image, a true fp16 model. A GT box is paired with the best-IoU un
   orig        original grid arange(0,H)/H
   <number>    grid arange(0,H)/(H-1) * number   (a fraction like 71/72 is accepted; 1.0 = grid ending at 1.0)
   cell        original grid, deltas scaled by H/72 before the 8x + log2 encoding (distances in units of cells)
-  prod        the fix as shipped in export.py (grid 71/72; the query box scale is research-only: sineq)
+  prod        the fixes as shipped in export.py (grid 71/72 + the size fix = sineqwh+71/72)
   <enc>+<grid>  a decoder patch plus a grid variant, e.g. sineq1.2+71/72 (enc part: sineq<a>, grid part: orig or a cap)
   wbias_<dcx>_<dcy>_<dw>_<dh>  weight edit, no code patch: adds the four numbers to the output bias of the shared box-refinement
               head (model.detr_decoder.box_head.layer3), e.g. wbias_0_0_0.04_0.02+71/72 ('+' joins a grid variant)
@@ -23,12 +23,14 @@ clipped to the image, a true fp16 model. A GT box is paired with the best-IoU un
   sinekey     decoder key sine positions in the trained 72-frame: (i+1)/72 * 2pi for the first H cells (instead of (i+1)/H)
   sineq       box coordinates fed to the decoder's box sine encoding scaled by H/72 (the 72-frame);
               sineq<a> (e.g. sineq0.5) scales by (H/72)**a instead
+              sineqxy / sineqwh scale only the box centre / only its width and height
+              sineqwhf<f> (e.g. sineqwhf2.4) scales width and height by the given factor instead of H/72
   frame72     sinekey + sineq + the RPB in the 72-frame (= cell): the whole decoder in the trained cell geometry
   encpad      bisection, only for "<c>in<canvas>" sizes: the vision encoder runs on the padded canvas (H=72), its
               feature map is cropped to the content (c/14 cells) and the decoder runs with the geometry of that
               smaller grid (grid, sine position, RPB at H=c/14), boxes normalised to the content
 
-Run from the repo root:  HF_TOKEN=... python test/collect_box_pairs.py --sizes 420 --variants orig,71/72,cell
+Run from the repo root:  HF_TOKEN=... python research/collect_box_pairs.py --sizes 420 --variants orig,71/72,cell
 Needs coco128 in test/data/coco128 (git-ignored): the ultralytics coco128 dataset (images/ + labels/).
 """
 import argparse, collections, glob, importlib.util, json, math, os, sys
@@ -43,8 +45,9 @@ from transformers.models.sam3 import Sam3Model, Sam3Processor
 from transformers.models.sam3.modeling_sam3 import Sam3DetrDecoder, box_cxcywh_to_xyxy
 
 SHIPPED_COORDS = Sam3DetrDecoder._get_coords               # the grid shipped in export.py
+E.BOX_SIZE_FIX = False                                     # the size fix shipped in export.py: only the `prod` variant has it
 ap = argparse.ArgumentParser()
-ap.add_argument("--coco", default=os.path.join(HERE, "data", "coco128"))
+ap.add_argument("--coco", default=os.path.join(HERE, "..", "test", "data", "coco128"))
 ap.add_argument("--sizes", default="420")
 ap.add_argument("--variants", default="orig")
 ap.add_argument("--nimg", type=int, default=64)
@@ -126,9 +129,14 @@ def apply_enc_variant(w, v, Hp):
         ve.fpn_pos_2 = full[:, :, :Hp, :Hp].contiguous().to(saved_fpn_pos.dtype)
     if v.startswith("sineq") or v == "frame72":                       # decoder box sine encoding in the 72-frame
         base = penc.encode_boxes
-        alpha = float(v[5:]) if v.startswith("sineq") and len(v) > 5 else 1.0
-        factor = (Hp / 72) ** alpha
-        penc.encode_boxes = lambda boxes: base(boxes * factor)
+        tail = v[5:] if v.startswith("sineq") else ""
+        part = tail[:2] if tail[:2] in ("xy", "wh") else ""           # sineqxy / sineqwh: scale only the centre / only the size
+        if part and len(tail) > 2:                                     # sineqwhf<f>: an explicit factor, e.g. to mis-scale the size on purpose at 1008
+            factor = float(tail[3:])
+        else:
+            factor = (Hp / 72) ** (float(tail) if tail and not part else 1.0)
+        scale = torch.tensor([1.0 if part == "wh" else factor] * 2 + [1.0 if part == "xy" else factor] * 2)
+        penc.encode_boxes = lambda boxes: base(boxes * scale.to(boxes))
 
     bias = model.detr_decoder.box_head.layer3.bias
     saved_bias = bias.data.clone()
@@ -170,9 +178,11 @@ def forward_encpad(w, x, tf, tm, content):
 
 def set_variant(v):
     Sam3DetrDecoder._get_rpb_matrix = ORIG_RPB
+    E.BOX_SIZE_FIX = False
     Sam3DetrDecoder._get_coords = orig_grid
     if v == "prod":                                           # exactly what the export scripts ship
         Sam3DetrDecoder._get_coords = SHIPPED_COORDS
+        E.BOX_SIZE_FIX = True
         return
     if v == "frame72":
         Sam3DetrDecoder._get_rpb_matrix = _rpb_cell_units

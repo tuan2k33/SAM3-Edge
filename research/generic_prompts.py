@@ -4,7 +4,7 @@ Same images, fp16 model and decoding as collect_box_pairs.py (first 64 usable im
 Per prompt: recall@IoU0.5 of the GT boxes >= 2% area (any class), precision of the predictions against every GT box
 of any size, predictions per image. "oracle" = the COCO class names present in the image, predictions merged over classes.
 
-    HF_TOKEN=... python test/generic_prompts.py [--imgsz 1008] [--thr 0.5 0.3]
+    HF_TOKEN=... python research/generic_prompts.py [--imgsz 1008] [--thr 0.5 0.3]
 """
 import argparse, collections, glob, importlib.util, os, sys
 import cv2, numpy as np, torch
@@ -16,7 +16,7 @@ OE = E   # export.py holds the set-classes and the text-as-input wrappers
 from transformers.models.sam3 import Sam3Model, Sam3Processor
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--coco", default=os.path.join(HERE, "data", "coco128"))
+ap.add_argument("--coco", default=os.path.join(HERE, "..", "test", "data", "coco128"))
 ap.add_argument("--imgsz", type=int, default=1008)
 ap.add_argument("--nimg", type=int, default=64)
 ap.add_argument("--skip", type=int, default=0)
