@@ -35,7 +35,7 @@ class Engine:
         self.S = S
         eng = trt.Runtime(trt.Logger(trt.Logger.ERROR)).deserialize_cuda_engine(open(path, "rb").read())
         self.ctx = eng.create_execution_context()
-        self.inp = torch.zeros(1, 3, S, S, dtype=torch.float16, device="cuda")
+        self.inp = torch.zeros(1, 3, S, S, dtype=torch.float16 if eng.get_tensor_dtype("pixel_values") == trt.float16 else torch.float32, device="cuda")
         self.out = {n: torch.zeros(tuple(self.ctx.get_tensor_shape(n)), dtype=torch.float16, device="cuda") for n in ("detections", "masks")}
         self.ctx.set_tensor_address("pixel_values", self.inp.data_ptr())
         for n, t in self.out.items():
@@ -55,7 +55,7 @@ if __name__ == "__main__":
     bgr = cv2.imread(a.image); H, W = bgr.shape[:2]
     det, mk = Engine(a.engine, a.imgsz)(bgr)
     keep = postprocess(det, mk, a.min_area, a.max_area)
-    print(f"{len(det)} points -> {len(keep)} masks")
+    print(f"{len(det)} masks -> {len(keep)} masks")
     vis, rng = bgr.copy(), np.random.RandomState(0)
     for i in keep:
         c = tuple(int(v) for v in rng.randint(60, 255, 3))

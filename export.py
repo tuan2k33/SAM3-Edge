@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """
-SAM3 (facebook/sam3) -> ONNX -> TensorRT engine, one script for every mode. The imgsz != 1008 decoder-grid fix (below) is applied at import,
-so it holds for all of them, and every engine outputs detections AND masks.
+SAM3 (facebook/sam3) -> ONNX -> TensorRT engine, one script for every mode. The two imgsz != 1008 decoder fixes (below) are applied at import,
+so they hold for every text mode, and every engine outputs detections AND masks.
 
   --mode set-classes   classes baked into the graph (--classes a b c): pixel_values -> detections + masks
                          -> weight/sam3_{imgsz}_set-classes_{classes}/sam3.{onnx,engine} (+ config_infer.txt, labels.txt for nvinfer)
   --mode open-text     the prompt is a runtime input: text_encoder + vision_decoder engines, built once, no re-export to change classes
                          (K = --k-max class slots per image; unused slots have an all-False text_mask and score 0)
                          -> weight/sam3_{imgsz}_open-text/{text_encoder,vision_decoder}.{onnx,engine}
-  --mode prompt-free   no text, no class: the SAM3 tracker segments everything from a grid of points (--grid-stride), batch 1, class-less (cls_id 0, score = predicted IoU)
+  --mode prompt-free   no text, no class: the SAM3 tracker segments everything from a grid of points (--grid-stride), batch 1, class-less (cls_id 0, score = predicted IoU);
+                         3 masks per point, masks at the decoder's size: detections [1,3P,6], masks [1,3P,S/14*4,S/14*4]
                          -> weight/sam3_{imgsz}_prompt-free/sam3.{onnx,engine}
 
-Outputs (fp16, pixels of the S x S input): detections [B,K*200,6] = x1 y1 x2 y2 score cls_id (cls_id = class slot), masks [B,K*200,36,36] probabilities.
+Input pixel_values fp32. Outputs (fp16, pixels of the S x S input): detections [B,K*200,6] = x1 y1 x2 y2 score cls_id (cls_id = class slot), masks [B,K*200,36,36] probabilities.
 The row of query q of class slot k is k*200 + q.
 
 Usage:
@@ -33,19 +34,25 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from transformers.models.sam3 import Sam3Model, Sam3Processor
-from transformers.models.sam3.modeling_sam3 import Sam3DetrDecoder, Sam3ViTRotaryEmbedding
+from transformers.models.sam3.modeling_sam3 import Sam3DetrDecoder, Sam3SinePositionEmbedding, Sam3ViTRotaryEmbedding
 
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 Q = 200          # object queries per class slot
 CTX_LEN = 32     # SAM3 text tokenizer context length
 MASK_SIZE = 36   # masks are interpolated down to MASK_SIZE x MASK_SIZE
+PATCH = 14       # ViT patch size: imgsz is trimmed down to a multiple of it
 
 
 # ── Fixes for running at imgsz != 1008 ─────────────────────────────────────
-# Applied at import, no-ops at H = 72. Evidence: test/BOX_SHRINK_INVESTIGATION.md
-# Decoder grid ends at the trained 71/72 for any H. (A query-box scale was tried and is removed for now.)
+# The checkpoint was trained at 1008 only: a 72 x 72 grid of feature cells (_TRAIN_GRID). Both fixes put the decoder back into that
+# geometry, both are the identity at H = 72, both are applied at import. Evidence: research/BOX_SHRINK.md, docs/NOTES.md section 7.
+#  1. Grid: the decoder's cell coordinates end at the trained 71/72 for any H (keeps the box centred).
+#  2. Size: the decoder learned that a box of normalized width w covers w * 72 cells. At grid H it covers w * H cells, so the size the
+#     query is told (the w, h part of its sine embedding) is given in cells / 72: w * H/72. Without it boxes come out about 10% narrow
+#     at 420. Only w and h: the centre plays no part (step 12), and mis-scaling the size by 72/H at 1008 reproduces the shrink (step 13).
 _TRAIN_GRID = 72                 # H at the checkpoint's training size (imgsz 1008 / patch 14)
+BOX_SIZE_FIX = True              # research scripts switch fix 2 off to test their own variants
 
 
 def _get_coords_denom_fix(self, height, width, dtype, device):
@@ -54,7 +61,45 @@ def _get_coords_denom_fix(self, height, width, dtype, device):
     return coords_h, coords_w
 
 
+_decoder_forward, _encode_boxes = Sam3DetrDecoder.forward, Sam3SinePositionEmbedding.encode_boxes
+
+
+def _decoder_forward_size_fix(self, *args, **kwargs):
+    shapes = kwargs.get("spatial_shapes")
+    self.position_encoding.cells = (int(shapes[0, 0]), int(shapes[0, 1])) if BOX_SIZE_FIX and shapes is not None else None
+    return _decoder_forward(self, *args, **kwargs)
+
+
+def _encode_boxes_in_cells(self, boxes):
+    cells = getattr(self, "cells", None)
+    if cells:
+        boxes = boxes * boxes.new_tensor([1.0, 1.0, cells[1] / _TRAIN_GRID, cells[0] / _TRAIN_GRID])   # (cx, cy, w, h)
+    return _encode_boxes(self, boxes)
+
+
 Sam3DetrDecoder._get_coords = _get_coords_denom_fix
+Sam3DetrDecoder.forward = _decoder_forward_size_fix
+Sam3SinePositionEmbedding.encode_boxes = _encode_boxes_in_cells
+
+
+# ── ViT sub-blocks left out by --prune ─────────────────────────────────────
+# Ranked by research/prune_search.py at imgsz 420, measured as real engines (docs/NOTES.md section 8): 20% faster at 420 and 700.
+# COCO val2017, person: at 420 AP@0.5 0.653 -> 0.623, the same object loses 0.07 of score on average; at 700 AP 0.832 -> 0.823, -0.04.
+# No object disappears. DETR encoder/decoder blocks were tried and rejected.
+PRUNE_VIT = (("mlp", 27), ("mlp", 26), ("attention", 24), ("attention", 22), ("mlp", 25), ("mlp", 20), ("mlp", 19), ("mlp", 31), ("attention", 26), ("attention", 25),
+             ("mlp", 24), ("mlp", 30), ("attention", 28), ("attention", 23), ("attention", 29), ("mlp", 29))
+
+
+class Zero(nn.Module):
+    """Stands in for a sub-block: output 0, so only the residual passes and the block is not traced into the ONNX."""
+
+    def __init__(self, pair):
+        super().__init__()
+        self.pair = pair   # attention blocks return (output, weights)
+
+    def forward(self, *args, query=None, **kwargs):
+        z = torch.zeros_like(query if query is not None else args[0])
+        return (z, None) if self.pair else z
 
 
 # ── Sinusoidal pos enc ────────────────────────────────────────────────────────
@@ -285,14 +330,15 @@ class Sam3Wrapper(nn.Module):
 
 
 class PromptFreeWrapper(nn.Module):
-    """pixel_values [1,3,S,S] -> detections [1,P,6] (x1 y1 x2 y2 score cls_id = 0, pixels; box = the mask's extent, score = the tracker's predicted IoU)
-    + masks [1,P,36,36] probabilities. The SAM3 tracker segments everything: one point per `stride` patches goes through its prompt encoder and mask decoder
-    (P = (S/14/stride)^2 points, their prompt embeddings are constants), the best of its 3 masks is kept. No NMS: overlapping masks are for the consumer to suppress.
+    """pixel_values [1,3,S,S] -> detections [1,N,6] (x1 y1 x2 y2 score cls_id = 0, pixels; box = the mask's extent, score = the tracker's predicted IoU)
+    + masks [1,N,mask_size,mask_size] probabilities. The SAM3 tracker segments everything: one point per `stride` patches goes through its prompt encoder and
+    mask decoder (P = (S/14/stride)^2 points, their prompt embeddings are constants). all_masks keeps the 3 masks of every point (N = 3P), otherwise the best
+    one (N = P). No NMS: overlapping masks are for the consumer to suppress.
     Batch 1: the mask decoder repeats the sparse prompts per image. The ViT is the detector's (shared in the checkpoint), the neck is the tracker's own."""
 
-    def __init__(self, tracker, device, imgsz, stride):
+    def __init__(self, tracker, device, imgsz, stride, all_masks=False, mask_size=MASK_SIZE):
         super().__init__()
-        self.S = imgsz
+        self.S, self.all_masks, self.mask_size = imgsz, all_masks, mask_size
         self.enc = _VisionEncoder(types.SimpleNamespace(vision_encoder=tracker.vision_encoder), device, imgsz)
         md, pe = tracker.mask_decoder, tracker.prompt_encoder
         self.conv_s0, self.conv_s1, self.mask_decoder = md.conv_s0, md.conv_s1, md
@@ -313,10 +359,13 @@ class PromptFreeWrapper(nn.Module):
         masks, iou, _, _ = self.mask_decoder(
             image_embeddings=fpn[2] + self.no_memory, image_positional_embeddings=self.pos, sparse_prompt_embeddings=self.sparse,
             dense_prompt_embeddings=self.dense, multimask_output=True, high_resolution_features=[self.conv_s0(fpn[0]), self.conv_s1(fpn[1])])
-        best = iou.argmax(-1, keepdim=True)                                        # [1,P,1]
         h, w = masks.shape[-2:]
-        m = masks.gather(2, best[..., None, None].expand(-1, -1, 1, h, w))[:, :, 0]   # [1,P,h,w] logits
-        score = iou.gather(2, best)[..., 0]
+        if self.all_masks:                                                         # the 3 masks of a point are part / object / whole: N = 3P
+            m, score = masks.flatten(1, 2), iou.flatten(1, 2)
+        else:
+            best = iou.argmax(-1, keepdim=True)                                    # [1,P,1]
+            m = masks.gather(2, best[..., None, None].expand(-1, -1, 1, h, w))[:, :, 0]   # [1,P,h,w] logits
+            score = iou.gather(2, best)[..., 0]
         inside = m > 0
         cols, rows = inside.any(2), inside.any(3)                                  # [1,P,w], [1,P,h]
         ix, iy = torch.arange(w, device=m.device).float(), torch.arange(h, device=m.device).float()
@@ -326,7 +375,8 @@ class PromptFreeWrapper(nn.Module):
         valid = cols.any(-1)
         box = torch.stack([x1 / w, y1 / h, x2 / w, y2 / h], -1).clamp(0, 1) * self.scale
         det = torch.cat([box, (score * valid)[..., None], torch.zeros_like(score)[..., None]], -1)
-        return det, F.interpolate(m.flatten(0, 1)[:, None], size=(MASK_SIZE, MASK_SIZE), mode="bilinear").sigmoid().view(1, -1, MASK_SIZE, MASK_SIZE)
+        ms = self.mask_size
+        return det, F.interpolate(m.flatten(0, 1)[:, None], size=(ms, ms), mode="bilinear").sigmoid().view(1, -1, ms, ms)
 
 
 class TextEncoderWrapper(nn.Module):
@@ -344,24 +394,6 @@ class TextEncoderWrapper(nn.Module):
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def validate_imgsz(model, imgsz, device="cpu"):
-    """Check the actual condition Sam3Wrapper/_VisionEncoder needs (does NOT
-    call the original HuggingFace model.get_vision_features() -- that always
-    fails for imgsz != 1008 because it has no positional-embedding resize
-    logic, whereas Sam3Wrapper below implements its OWN resize logic
-    (tile+crop) and therefore supports imgsz values other than 1008, as long
-    as two conditions hold: it must be a multiple of patch_size, and the
-    image must be square (H=W, since the wrapper only takes one imgsz value)."""
-    print(f"[Validate] imgsz={imgsz} ...")
-    ps = model.vision_encoder.backbone.config.patch_size
-    if imgsz % ps != 0:
-        print(f"[Validate] FAILED: imgsz={imgsz} is not divisible by patch_size={ps}")
-        return False
-    print(f"[Validate] OK — imgsz={imgsz} is a multiple of patch_size={ps} "
-          f"(Hp=Wp={imgsz // ps}), square image")
-    return True
-
 
 def normalize_class(cls):
     """Only used for the engine folder name (paths can't contain spaces):
@@ -390,8 +422,8 @@ def encode_concepts(model, processor, classes):
 
 
 def onnx_to_fp16(fp32_path, fp16_path):
-    """TensorRT 11 is strongly typed: the engine precision is the ONNX dtype, so convert the graph, input and output included
-    (fp16 pixel_values in, fp16 detections out). The converter runs without shape inference (it needs ~7 GB here)
+    """TensorRT 11 is strongly typed: the engine precision is the ONNX dtype, so convert the graph, outputs and text inputs included
+    (fp32 pixel_values in, fp16 detections out). The converter runs without shape inference (it needs ~7 GB here)
     and then leaves Cast(to=fp32) nodes inside the graph, patched below."""
     import onnx
     from onnx import TensorProto
@@ -404,6 +436,12 @@ def onnx_to_fp16(fp32_path, fp16_path):
             for a in nd.attribute:
                 if a.name == "to" and a.i == TensorProto.FLOAT:
                     a.i = TensorProto.FLOAT16
+    for i in m.graph.input:  # nvinfer only writes float32 images: the image input stays fp32 and is cast inside (an fp16 input gave zero detections in DeepStream)
+        if i.name == "pixel_values":
+            i.type.tensor_type.elem_type = TensorProto.FLOAT
+            for nd in m.graph.node:
+                nd.input[:] = ["pixel_values_fp16" if x == "pixel_values" else x for x in nd.input]
+            m.graph.node.insert(0, onnx.helper.make_node("Cast", ["pixel_values"], ["pixel_values_fp16"], to=TensorProto.FLOAT16))
     onnx.save(m, fp16_path)
     print(f"[FP16] {fp16_path}  ({os.path.getsize(fp16_path)/1e6:.0f} MB, {time.perf_counter()-t0:.0f}s)")
 
@@ -419,7 +457,7 @@ def generate_ds_config(classes, engine_path, Hm, Wm):
     with open(labels_path, "w") as f:
         f.write("\n".join(classes) + "\n")
 
-    lib_path = os.path.join(ROOT, "deepstream", "libnvdsinfer_sam3.so")  # build it, see CLAUDE.md
+    lib_path = os.path.join(ROOT, "deepstream", "libnvdsinfer_sam3.so")  # build it, see deepstream/GUIDE.md
     class_attrs = "\n".join(
         f"[class-attrs-{i}]\npre-cluster-threshold=0.3" for i in range(nc)
     )
@@ -443,7 +481,7 @@ net-scale-factor=0.00784313725490196
 offsets=127.5;127.5;127.5
 model-color-format=0
 
-network-mode=1
+network-mode=2
 process-mode=1
 network-type=3
 segmentation-threshold=0.5
@@ -465,8 +503,8 @@ topk={N}
 
 
 def run_trtexec(onnx_path, engine_path, shapes, extra_args=()):
-    """shapes: {input_name: (min, opt, max)}, each an 'AxBxC' string. TensorRT 11 is strongly typed: the precision is the ONNX dtype (see onnx_to_fp16)."""
-    cmd = ["trtexec", f"--onnx={onnx_path}", f"--saveEngine={engine_path}"]
+    """shapes: {input_name: (min, opt, max)}, each an 'AxBxC' string. Strongly typed: the precision is the ONNX dtype (see onnx_to_fp16)."""
+    cmd = ["trtexec", f"--onnx={onnx_path}", f"--saveEngine={engine_path}", "--stronglyTyped"]  # TensorRT 10 (DeepStream 9) needs the flag, on 11 it is a no-op
     for flag, idx in (("--minShapes", 0), ("--optShapes", 1), ("--maxShapes", 2)):
         if shapes:  # a static model (prompt-free) takes no explicit shapes
             cmd.append(f"{flag}=" + ",".join(f"{n}:{v[idx]}" for n, v in shapes.items()))
@@ -495,15 +533,21 @@ def free_memory():
     ctypes.CDLL("libc.so.6").malloc_trim(0)
 
 
+def _prune_tag(args):
+    return "_pruned" if args.prune else ""
+
+
 def load(args):
     token = os.environ.get("HF_TOKEN")
     t0 = time.perf_counter()
     print(f"[Load] {args.checkpoint} ...")
     model = Sam3Model.from_pretrained(args.checkpoint, token=token).to(args.device).eval()
     processor = Sam3Processor.from_pretrained(args.checkpoint, token=token)
+    if args.prune:
+        for attr, k in PRUNE_VIT:
+            setattr(model.vision_encoder.backbone.layers[k], attr, Zero(pair=attr == "attention"))
+        print(f"[Prune] WARNING: {len(PRUNE_VIT)} ViT sub-blocks are left out: about 20% faster, precision and recall slightly lower")
     print(f"[Load] {time.perf_counter() - t0:.1f}s")
-    if not validate_imgsz(model, args.imgsz, args.device):
-        raise ValueError(f"imgsz={args.imgsz} not compatible (must be a multiple of patch_size)")
     return model, processor
 
 
@@ -511,7 +555,7 @@ def load(args):
 
 def export_set_classes(args):
     assert args.classes, "--mode set-classes needs --classes"
-    out_dir = args.output_dir or os.path.join(ROOT, "weight", f"sam3_{args.imgsz}_set-classes_" + "_".join(normalize_class(c) for c in args.classes))
+    out_dir = args.output_dir or os.path.join(ROOT, "weight", f"sam3_{args.imgsz}_set-classes_" + "_".join(normalize_class(c) for c in args.classes) + _prune_tag(args))
     os.makedirs(out_dir, exist_ok=True)
     onnx_path, engine_path = os.path.join(out_dir, "sam3.onnx"), os.path.join(out_dir, "sam3.engine")
     model, processor = load(args)
@@ -538,7 +582,7 @@ def export_set_classes(args):
 
 
 def export_open_text(args):
-    out_dir = args.output_dir or os.path.join(ROOT, "weight", f"sam3_{args.imgsz}_open-text")
+    out_dir = args.output_dir or os.path.join(ROOT, "weight", f"sam3_{args.imgsz}_open-text" + _prune_tag(args))
     os.makedirs(out_dir, exist_ok=True)
     model, processor = load(args)
     S, K, B = args.imgsz, args.k_max, args.max_batch or 4
@@ -592,7 +636,8 @@ def export_prompt_free(args):
     onnx_path, engine_path = os.path.join(out_dir, "sam3.onnx"), os.path.join(out_dir, "sam3.engine")
     print(f"[Load] {args.checkpoint} (tracker) ...")
     tracker = Sam3TrackerModel.from_pretrained(args.checkpoint, token=os.environ.get("HF_TOKEN")).float().to(args.device).eval()  # the ViT and tracker_neck come from the same checkpoint
-    wrapper = PromptFreeWrapper(tracker, args.device, args.imgsz, args.grid_stride).to(args.device).eval()
+    # all 3 masks of every point at the decoder's own resolution: recall@0.5 0.62 vs 0.35 for the best mask at 36x36, same latency (docs/NOTES.md section 6)
+    wrapper = PromptFreeWrapper(tracker, args.device, args.imgsz, args.grid_stride, all_masks=True, mask_size=args.imgsz // PATCH * 4).to(args.device).eval()
     dummy = torch.randn(1, 3, args.imgsz, args.imgsz, device=args.device)
     with torch.no_grad():
         detections, masks = wrapper(dummy)
@@ -611,14 +656,16 @@ def parse_args():
     p.add_argument("--mode", required=True, choices=["set-classes", "open-text", "prompt-free"])
     p.add_argument("--classes", nargs="+", help="set-classes: class names (kept as typed for the prompt; the engine folder name replaces spaces with '-')")
     p.add_argument("--checkpoint", default="facebook/sam3")
-    p.add_argument("--imgsz", type=int, default=420, help="square, a multiple of patch_size (14)")
+    p.add_argument("--imgsz", type=int, default=420, help="square; trimmed down to a multiple of 14 (the patch size)")
     p.add_argument("--opset", type=int, default=17)
     p.add_argument("--device", default="cpu", choices=["cpu", "cuda"], help="cpu: the FP32 model (3.4 GB) does not fit a 4 GB GPU")
     p.add_argument("--min-batch", type=int, default=1, help="set-classes")
     p.add_argument("--opt-batch", type=int, default=4, help="set-classes")
     p.add_argument("--max-batch", type=int, help="max batch = max cameras (default: 16 for set-classes, 4 for open-text)")
     p.add_argument("--k-max", type=int, default=5, help="open-text: class slots per camera baked into vision_decoder.engine; must match deepstream/sam3open_text.K_MAX")
-    p.add_argument("--grid-stride", type=int, default=2, help="prompt-free: one point every this many patches, in both directions (2 -> 225 points at 420)")
+    p.add_argument("--grid-stride", type=int, default=2, help="prompt-free: one point every this many patches, in both directions (2 -> 225 points, 675 masks at 420)")
+    p.add_argument("--prune", action="store_true",
+                   help="set-classes, open-text: leave 16 ViT sub-blocks out: about 20%% faster, precision and recall slightly lower; adds _pruned to the engine folder")
     p.add_argument("--skip-trt", action="store_true", help="only write the ONNX files")
     p.add_argument("--trt-args", default="", help='extra trtexec flags, e.g. "--memPoolSize=workspace:1536 --builderOptimizationLevel=1" on low-RAM machines')
     p.add_argument("--output-dir", help="default: weight/sam3_{imgsz}_{mode}[_{classes}]/")
@@ -627,6 +674,9 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.imgsz % PATCH:
+        print(f"[Args] WARNING: imgsz {args.imgsz} is not a multiple of {PATCH}, using {args.imgsz // PATCH * PATCH}")
+        args.imgsz -= args.imgsz % PATCH
     {"set-classes": export_set_classes, "open-text": export_open_text, "prompt-free": export_prompt_free}[args.mode](args)
 
 

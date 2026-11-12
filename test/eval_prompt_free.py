@@ -31,9 +31,10 @@ for im in imgs:
     gts = [a for a in by_img[im["id"]] if not a["iscrowd"] and a["area"] > 0]
     if not gts: continue
     det, mk = run(cv2.imdecode(np.frombuffer(z.read("val2017/" + im["file_name"]), np.uint8), cv2.IMREAD_COLOR))
-    P = (F.interpolate(mk[:, None], size=(S, S), mode="bilinear")[:, 0] > 0.5).flatten(1).half()
-    g = (torch.from_numpy(np.stack([polygons(a, im) for a in gts])).cuda() > 0).flatten(1).half()
-    inter = g @ P.T
+    # pixel counts pass 65504 (a mask over 37% of a 420 frame): fp16 sums overflowed and large objects counted as missed
+    P = torch.cat([(F.interpolate(c[:, None], size=(S, S), mode="bilinear")[:, 0] > 0.5).flatten(1) for c in mk.split(64)])   # bool [N, S*S]
+    g = (torch.from_numpy(np.stack([polygons(a, im) for a in gts])).cuda() > 0).flatten(1).float()
+    inter = torch.cat([g @ c.float().T for c in P.split(64)], 1)
     iou = inter / (g.sum(1, keepdim=True) + P.sum(1)[None] - inter + 1e-6)
     keep = postprocess(det, mk)
     counts.append(len(keep))

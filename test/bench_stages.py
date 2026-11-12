@@ -12,7 +12,7 @@ and is not in the runtime data path. (2)+(3) ARE both in the runtime data
 path for deepstream/ds9_open_text.py (open-text): (3) runs inside nvinfer
 every inferred frame, (2) runs in Python only when a prompt changes.
 
-Usage: python3 bench_stages.py [--imgsz 420] [--batch 1 2 4]
+Usage (from the repo root): python3 test/bench_stages.py [--imgsz 420] [--batch 1 2 4]
 """
 import argparse
 import time
