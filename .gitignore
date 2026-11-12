@@ -1,40 +1,26 @@
-# SAM3 library (install separately: pip install git+https://github.com/facebookresearch/sam3)
-sam3/
-sam3.egg-info/
-
-# model weights & exports
+# engines, ONNX, timing cache
+weight/
 *.pt
 *.onnx
 *.engine
 *.plan
-weight/
 
+# outputs (videos, images)
+output/
 
-# python artifacts
+# build artifacts
+*.so
+deepstream/test/test_parser
 __pycache__/
 *.pyc
-*.pyo
-*.egg-info/
-dist/
-build/
-.eggs/
 
-# mediamtx binary (auto-downloaded)
-.mediamtx/
+# datasets and rendered results
+test/data/
+research/coco_vis/
 
-# IDE
+# local
+.env
+.venv
 .vscode/
 .idea/
 *.swp
-.env
-.venv
-
-# pipeline output videos
-output/
-
-# compiled nvinfer plugin (build it from deepstream/nvdsparsebbox_sam3.cpp)
-*.so
-
-# downloaded test data
-test/data/
-test/coco_vis/
